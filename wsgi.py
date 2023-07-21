@@ -1,5 +1,4 @@
-from main import app_factory
-from config import project_name
+from app import create_app
 import os
 
 try:
@@ -10,8 +9,7 @@ except KeyError:
         "It tells the application which configuration class to load.")
     exit()
 
-app = app_factory(config_obj_path, project_name)
-
+app = create_app()
 
 if __name__ == '__main__':
     _debug = app.config.get('DEBUG', False)
@@ -24,6 +22,4 @@ if __name__ == '__main__':
         **app.config.get('SERVER_OPTIONS', {})
     }
 
-    
     app.run(**kwargs)
-    

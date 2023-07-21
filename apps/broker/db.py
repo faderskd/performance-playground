@@ -37,8 +37,10 @@ class BrokerDb:
         with open(self.FILE_NAME, 'rb') as file:
             db_offset = offset * self.BLOCK_SIZE
             file.seek(db_offset)
-            data_len = int.from_bytes(file.read(self.BLOCK_SIZE_ENCODING_BYTES), 'little')
-            data = file.read(data_len).decode(self.ENCODING)
+            buffer = file.read(self.BLOCK_SIZE)
+            data_len = int.from_bytes(buffer[:self.BLOCK_SIZE_ENCODING_BYTES], 'little')
+            data = buffer[
+                   self.BLOCK_SIZE_ENCODING_BYTES:self.BLOCK_SIZE_ENCODING_BYTES + data_len].decode(self.ENCODING)
             return DbRecord('', data)
 
     @staticmethod
