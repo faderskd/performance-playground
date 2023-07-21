@@ -1,8 +1,6 @@
 import os
 import logging
 
-from datetime import timedelta
-
 project_name = "queuestd"
 
 
@@ -40,6 +38,7 @@ class Config(object):
     LOG_LEVEL = logging.INFO
     # used by logging.Formatter
     LOG_FORMAT = "%(asctime)s %(levelname)s\t: %(message)s"
+
 
 # config class for development environment
 class Dev(Config):

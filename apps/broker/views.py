@@ -20,9 +20,6 @@ def append():
 
 @app.route('/read/<offset>', methods=['GET'])
 def read(offset: int):
-    try:
-        offset = int(offset)
-        record = db.read_record(offset).to_model()
-        return jsonify(record.model_dump())
-    except ValidationError as e:
-        return jsonify({'error': str(e)}), 400
+    offset = int(offset)
+    record = db.read_record(offset).to_model()
+    return jsonify(record.model_dump())

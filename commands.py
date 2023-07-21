@@ -16,11 +16,7 @@ APPS_FOLDER = 'apps'
 
 @click.command('new-app', help='creates a new blueprint app')
 @click.argument('name', required=False)
-@click.option(
-    '-t', '--with-templates',
-    default=False, is_flag=True, show_default=True,
-    help='create templates folder for blueprint')
-def new_app(name, with_templates):
+def new_app(name):
     """
     Command to handle blueprints within your project
     """
@@ -52,10 +48,6 @@ def new_app(name, with_templates):
 
     os.mkdir(app_path)
 
-    if with_templates:
-        os.mkdir(os.path.join(app_path, 'templates'))
-        os.mkdir(os.path.join(app_path, 'templates', path_name))
-
     # empty __init__.py
     with open(os.path.join(app_path, '__init__.py'), 'w') as fs:
         fs.write("from .views import app")
@@ -66,10 +58,6 @@ def new_app(name, with_templates):
 
         if 'flask-mongoengine' in requirements:
             fs.write("from extensions import nosql\n\n")
-
-    if 'flask-wtf' in requirements:
-        with open(os.path.join(app_path, 'forms.py'), 'w') as fs:
-            fs.write('from flask_wtf import FlaskForm\n\n')
 
     with open(os.path.join(app_path, 'views.py'), 'w') as fs:
         fs.write(
