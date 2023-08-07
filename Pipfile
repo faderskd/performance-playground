@@ -4,7 +4,6 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-pytest = "*"
 empty = "*"
 flask = "*"
 flask-testing = "*"
@@ -12,6 +11,7 @@ flask-debugtoolbar = "*"
 pydantic = "*"
 
 [dev-packages]
+pytest = "*"
 
 [requires]
 python_version = "3.9"

@@ -1,68 +1,81 @@
+import cProfile
+import logging
+import pstats
 import string
+import tempfile
+import threading
 from concurrent.futures.thread import ThreadPoolExecutor
-from unittest import TestCase
 import random
+from typing import List
+from unittest import TestCase
 
 from apps.broker.db import BrokerDb, DbRecord
+
+logger = logging.getLogger(__name__)
 
 
 class TestBenchmark(TestCase):
     def setUp(self) -> None:
         # TODO remove db file or create a temporary one
-        pass
-
+        self.db = BrokerDb()
+        self.records_count = 100_000
+        self.should_stop = threading.Event()
+        self.records = self._write_init_data_to_db(self.records_count)
 
     def test_should_run_benchmark(self):
         # given
-        db = BrokerDb()
-
-        write_workers = 4
-        writer_thread_pool = ThreadPoolExecutor(max_workers=write_workers)
-
         read_workers = 4
         reader_thread_pool = ThreadPoolExecutor(max_workers=read_workers)
 
-        records_count = 100_:000
-        write_records_per_thread = records_count // write_workers
-        read_records_per_thread = records_count // read_workers
+        read_records_per_thread = self.records_count // read_workers
 
-        records = [DbRecord(id=self.random_string(5), data=self.random_string(10)) for _ in range(records_count)]
-        records_as_set = {r.data for r in records}
-        offsets = list(range(0, records_count))
-        random.shuffle(offsets)
-
-        def writer_job(worker_number):
-            def job():
-                start = worker_number * write_records_per_thread
-                for rec_idx in range(start, start + write_records_per_thread):
-                    db.append_record(records[rec_idx])
-
-            return job
+        records_as_set = {r.data for r in self.records}
+        offsets = list(range(self.records_count))
 
         def reader_job(worker_number):
             def job():
-                start = worker_number * read_records_per_thread
-                for rec_idx in range(start, start + read_records_per_thread):
-                    record = db.read_record(offsets[rec_idx])
-                    self.assertTrue(record.data in records_as_set)
+                i = 0
+                count = 0
+                while not self.should_stop.is_set():
+                    start = worker_number * read_records_per_thread
+                    curr_index = start + i % read_records_per_thread
+                    record = self.db.read_record(offsets[curr_index])
+                    assert record.data in records_as_set
+
+                    i += 1
+                    count += 1
+                return count
 
             return job
-
-        # when
-        write_futures = []
-        for i in range(write_workers):
-            write_futures.append(writer_thread_pool.submit(writer_job(i)))
-
-        for f in write_futures:
-            f.result()
 
         read_futures = []
         for i in range(read_workers):
             read_futures.append(reader_thread_pool.submit(reader_job(i)))
 
-        # then
-        for f in read_futures:
-            f.result()
+        threading.Thread(target=self.writer_job).run()
 
-    def random_string(self, length=10):
+        # then
+        total_operations = 0
+        for f in read_futures:
+            total_operations += f.result()
+        logger.info("Total read throughput: %d", total_operations)
+
+    def test_should_run_benchmark_with_profiler(self):
+        profile_file = 'profile.stats'
+        cProfile.runctx('self.test_should_run_benchmark()', globals(), locals(), filename=profile_file)
+
+    def _write_init_data_to_db(self, records_count: int) -> List[DbRecord]:
+        records = [DbRecord(id=self._random_string(5), data=self._random_string(10)) for _ in range(records_count)]
+        for rec_idx in range(self.records_count):
+            self.db.append_record(records[rec_idx])
+
+        return records
+
+    def writer_job(self):
+        for rec in self.records:
+            self.db.append_record(rec)
+        self.should_stop.set()
+
+    @staticmethod
+    def _random_string(length=10):
         return ''.join([random.choice(string.ascii_uppercase + string.digits) for _ in range(length)])

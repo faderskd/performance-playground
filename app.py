@@ -64,10 +64,11 @@ def register_errorhandlers(app):
 
 
 def register_commands(app):
-    from commands import new_app, test_cmd
+    from commands import new_app, test_cmd, print_profile
 
     app.cli.add_command(new_app)
     app.cli.add_command(test_cmd)
+    app.cli.add_command(print_profile)
 
 
 def configure_logger(app):

@@ -25,7 +25,7 @@ extension to your project, might be a good idea to create its instance
 here (and load it through your configuration).
 
 ## mixins.py
-
+ 
 Right now it only has a http mixin for some standard http behavior. Useful
 for vanilla web projects. Not so much if you're building a web service.
 
@@ -54,3 +54,32 @@ that are not:
 * `json_friendly [yes]` monkey patches the environment so json snippets can
 be directly used in your code. Basically, we add `true`, `false` and `null`
 as aliases to True, False and None.
+
+# Monitoring Commands
+
+### Page cache
+```shell script
+free -mw 
+vmstat -1
+sudo strace -ttT -p <pid> -e trace=read,write,lseek
+sudo vmtouch db
+sync; echo 3 | sudo tee /proc/sys/vm/drop_caches
+```
+
+### Running benchmark
+```
+pytest --log-cli-level=info 
+```
+
+### Profiling
+```shell script
+python -m cProfile -s cumulative -m pytest tests/test_benchmark.py
+```
+
+```python
+import pstats
+p = pstats.Stats('output.stats')
+p.sort_stats('cumulative')
+p.print_stats()
+```
+

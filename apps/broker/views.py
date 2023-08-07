@@ -18,7 +18,7 @@ def append():
         return jsonify({'error': str(e)}), 400
 
 
-@app.route('/read/<offset>', methods=['GET'])
+@app.route('/read/<offset>/', methods=['GET'])
 def read(offset: int):
     offset = int(offset)
     record = db.read_record(offset).to_model()

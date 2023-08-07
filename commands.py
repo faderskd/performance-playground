@@ -1,6 +1,8 @@
 # coding:utf-8
-
+import cProfile
 import os
+import pstats
+
 import click
 
 try:
@@ -127,3 +129,12 @@ def test_cmd(failfast, verbosity, warnings):
         failfast=failfast,
         verbosity=verbosity
     ).run(test_suite)
+
+
+@click.command('print-profile', help='prints profile from stats file')
+@click.option('-f', 'filename', default='profile.stats', is_flag=False, help='profile file')
+def print_profile(filename):
+    profile_file = filename
+    stats = pstats.Stats(profile_file)
+    stats.sort_stats("cumulative")
+    stats.print_stats()

@@ -9,3 +9,7 @@ run-tests:
 # creates a new app under apps
 new-app:
 	FLASK_ENV=development FLASK_CONFIG_DEFAULT=Dev flask new-app
+
+# prints python profile file
+print-profile:
+	FLASK_ENV=development FLASK_CONFIG_DEFAULT=Dev flask print-profile
