@@ -1,15 +1,15 @@
-import cProfile
 import logging
-import pstats
 import string
-import tempfile
 import threading
 from concurrent.futures.thread import ThreadPoolExecutor
 import random
 from typing import List
 from unittest import TestCase
 
+import yappi
+
 from apps.broker.db import BrokerDb, DbRecord
+from tests.profiler_utils import profile
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +61,8 @@ class TestBenchmark(TestCase):
         logger.info("Total read throughput: %d", total_operations)
 
     def test_should_run_benchmark_with_profiler(self):
-        profile_file = 'profile.stats'
-        cProfile.runctx('self.test_should_run_benchmark()', globals(), locals(), filename=profile_file)
+        with profile():
+            self.test_should_run_benchmark()
 
     def _write_init_data_to_db(self, records_count: int) -> List[DbRecord]:
         records = [DbRecord(id=self._random_string(5), data=self._random_string(10)) for _ in range(records_count)]

@@ -68,18 +68,11 @@ sync; echo 3 | sudo tee /proc/sys/vm/drop_caches
 
 ### Running benchmark
 ```
-pytest --log-cli-level=info 
+pytest --log-cli-level=info tests/test_benchmark.py::TestBenchmark::test_should_run_benchmark 
 ```
 
-### Profiling
-```shell script
-python -m cProfile -s cumulative -m pytest tests/test_benchmark.py
+### Running benchmark with profiler
 ```
-
-```python
-import pstats
-p = pstats.Stats('output.stats')
-p.sort_stats('cumulative')
-p.print_stats()
+pytest tests/test_benchmark.py::TestBenchmark::test_should_run_benchmark_with_profiler
+make draw-profile
 ```
-

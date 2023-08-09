@@ -9,6 +9,9 @@ flask = "*"
 flask-testing = "*"
 flask-debugtoolbar = "*"
 pydantic = "*"
+yappi = "*"
+snakeviz = "*"
+memory-profiler = "*"
 
 [dev-packages]
 pytest = "*"

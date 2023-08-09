@@ -10,6 +10,6 @@ run-tests:
 new-app:
 	FLASK_ENV=development FLASK_CONFIG_DEFAULT=Dev flask new-app
 
-# prints python profile file
-print-profile:
-	FLASK_ENV=development FLASK_CONFIG_DEFAULT=Dev flask print-profile
+# draws python profile from proc file
+draw-profile:
+	snakeviz results.prof
