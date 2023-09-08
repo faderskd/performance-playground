@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import List
 
 from apps.broker.models import Record
+from apps.broker.utils import public, private
 
-FILE_NAME = 'db'
 DB_FILE_HEADER_SIZE_BYTES = 1024
 BLOCK_SIZE_BYTES = 1024
 BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES = 2  # max 65536 slots
@@ -17,6 +17,7 @@ STR_ENCODING = 'utf8'
 INT_ENCODING = 'big'
 
 
+@private
 @dataclass
 class DbSlotPointer:
     offset: int
@@ -27,17 +28,13 @@ class DbSlotPointer:
                 int(self.length).to_bytes(SLOT_LENGTH_SIZE, INT_ENCODING))
 
 
+@private
 @dataclass
 class DbSlot:
     data: bytearray
 
 
-@dataclass
-class DbRecordIndex:
-    block: int
-    slot: int
-
-
+@private
 @dataclass
 class DbRecord:
     id: str
@@ -51,20 +48,28 @@ class DbRecord:
         return Record(id=self.id, data=self.data)
 
 
+@public
+@dataclass
+class DbRecordIndex:
+    block: int
+    slot: int
+
+
+@private
 class DbBlock:
     def __init__(self, block_number: int, slot_pointers: List[DbSlotPointer], data: bytearray):
         self.block_number = block_number
-        self._slots = slot_pointers
+        self._slot_pointers = slot_pointers
         self._data = data
 
     def add_slot(self, slot_data: bytearray) -> DbRecordIndex:
         # update number of slots
-        self._data[:BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES] = int(len(self._slots) + 1).to_bytes(
+        self._data[:BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES] = int(len(self._slot_pointers) + 1).to_bytes(
             BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES, INT_ENCODING)
 
         # update slot data
-        if self._slots:
-            first_offset = self._slots[-1].offset
+        if self._slot_pointers:
+            first_offset = self._slot_pointers[-1].offset
             new_offset = first_offset - len(slot_data)
         else:
             new_offset = len(self._data) - len(slot_data)
@@ -72,16 +77,19 @@ class DbBlock:
 
         # update slots pointers
         new_slot_pointer = DbSlotPointer(offset=new_offset, length=len(slot_data))
-        slot_start_offset = BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES + SLOT_POINTER_SIZE_BYTES * len(self._slots)
-        slot_end_offset = slot_start_offset + SLOT_POINTER_SIZE_BYTES
-        self._data[slot_start_offset: slot_end_offset] = new_slot_pointer.to_binary()
-        self._slots.append(new_slot_pointer)
-        return DbRecordIndex(self.block_number, len(self._slots) - 1)
+        slot_pointer_start_offset = BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES + SLOT_POINTER_SIZE_BYTES * len(
+            self._slot_pointers)
+        slot_pointer_end_offset = slot_pointer_start_offset + SLOT_POINTER_SIZE_BYTES
+        self._data[slot_pointer_start_offset: slot_pointer_end_offset] = new_slot_pointer.to_binary()
+        self._slot_pointers.append(new_slot_pointer)
+        return DbRecordIndex(self.block_number, len(self._slot_pointers) - 1)
 
     def has_space_for_data(self, data: bytes) -> bool:
         # len(self.slots) + 1 because we have to count for a new slot pointer too
+        new_slot = 1
         return len(data) <= (
-            BLOCK_SIZE_BYTES - BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES - (len(self._slots) + 1) * SLOT_POINTER_SIZE_BYTES)
+            BLOCK_SIZE_BYTES - BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES - (
+            len(self._slot_pointers) + new_slot) * SLOT_POINTER_SIZE_BYTES)
 
     @classmethod
     def empty(cls, block_number: int):
@@ -95,7 +103,7 @@ class DbBlock:
         binary_slots_pointers = binary_block[slots_pointers_slice]
         slot_pointers = []
         for i in range(number_of_slots):
-            offset_slice = slice(i * SLOT_LENGTH_SIZE, i * SLOT_LENGTH_SIZE + SLOT_OFFSET_SIZE_BYTES)
+            offset_slice = slice(i * SLOT_POINTER_SIZE_BYTES, i * SLOT_POINTER_SIZE_BYTES + SLOT_OFFSET_SIZE_BYTES)
             length_slice = slice(offset_slice.stop, offset_slice.stop + SLOT_LENGTH_SIZE)
             slot_pointers.append(
                 DbSlotPointer(
@@ -111,7 +119,14 @@ class DbBlock:
     def to_binary(self) -> bytes:
         return self._data
 
+    def get_data(self, slot_number: int) -> bytes:
+        if slot_number > len(self._slot_pointers):
+            InvalidSlotExeption(f'Slot {slot_number} cannot be find in block {self.block_number}')
+        offset = self._slot_pointers[slot_number].offset
+        return self._data[offset:offset + self._slot_pointers[slot_number].length]
 
+
+@private
 class HeapFile:
     def __init__(self, file_handle):
         self._file = file_handle
@@ -127,7 +142,7 @@ class HeapFile:
         return DbBlock.from_binary(block_number, binary_block)
 
     def save(self, working_block: DbBlock):
-        if working_block.block_number == 0:
+        if self._data_blocks == 0:
             data_to_save = bytearray(DB_FILE_HEADER_SIZE_BYTES)
             data_to_save.extend(working_block.to_binary())
         else:
@@ -141,14 +156,27 @@ class HeapFile:
             return 0
         return (last_offset - DB_FILE_HEADER_SIZE_BYTES) // BLOCK_SIZE_BYTES
 
+    def get_block(self, index: DbRecordIndex) -> DbBlock:
+        block_offset = DB_FILE_HEADER_SIZE_BYTES + index.block * BLOCK_SIZE_BYTES
+        if self._file.seek(0, os.SEEK_END) < block_offset - BLOCK_SIZE_BYTES:
+            raise InvalidOffsetExeption(f'Index {index} produces invalid offset while searching database block')
+        self._file.seek(block_offset)
+        binary_block = bytearray(self._file.read(BLOCK_SIZE_BYTES))
+        return DbBlock.from_binary(index.block, binary_block)
 
+
+@public
 class BrokerDb:
+    def __init__(self, heap_file_path: str):
+        self._db_file_path = heap_file_path
+        self._create_heap_file(self._db_file_path)
+
     def append_record(self, record: DbRecord) -> (int, int):
         binary_data = bytearray(record.data.encode(STR_ENCODING))
         if not DbBlock.data_fits_empty_block(binary_data):
-            raise DataToLarge(f'Maximum data size is {BLOCK_MAX_DATA_SIZE}')
+            raise DataToLargeException(f'Maximum data size is {BLOCK_MAX_DATA_SIZE}')
 
-        with open(FILE_NAME, 'ab+') as file:
+        with open(self._db_file_path, 'r+b') as file:
             heap_file = HeapFile(file)
             working_block = heap_file.get_working_block()
 
@@ -162,13 +190,27 @@ class BrokerDb:
             return index
 
     def read_record(self, index: DbRecordIndex) -> DbRecord:
-        return DbRecord('', '')
+        with open(self._db_file_path, 'rb') as file:
+            heap_file = HeapFile(file)
+            working_block = heap_file.get_block(index)
+            binary_data = working_block.get_data(index.slot)
+            return DbRecord('', binary_data.decode(STR_ENCODING))
 
-    @staticmethod
-    def is_empty(file_name):
-        return os.stat(file_name).st_size == 0
+    def _create_heap_file(self, file_path):
+        with open(file_path, 'a+') as _:
+            pass
 
 
-class DataToLarge(RuntimeError):
+class DataToLargeException(RuntimeError):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
+class InvalidOffsetExeption(ValueError):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
+class InvalidSlotExeption(ValueError):
     def __init__(self, msg: str):
         super().__init__(msg)
