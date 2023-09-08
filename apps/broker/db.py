@@ -85,11 +85,12 @@ class DbBlock:
         return DbRecordIndex(self.block_number, len(self._slot_pointers) - 1)
 
     def has_space_for_data(self, data: bytes) -> bool:
-        # len(self.slots) + 1 because we have to count for a new slot pointer too
-        new_slot = 1
-        return len(data) <= (
-            BLOCK_SIZE_BYTES - BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES - (
-            len(self._slot_pointers) + new_slot) * SLOT_POINTER_SIZE_BYTES)
+        last_slot_pointer_offset = BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES + len(self._slot_pointers)  * SLOT_POINTER_SIZE_BYTES
+        if self._slot_pointers:
+            first_data_pointer_offset = self._slot_pointers[-1].offset
+        else:
+            first_data_pointer_offset = BLOCK_SIZE_BYTES
+        return len(data) + SLOT_POINTER_SIZE_BYTES <= first_data_pointer_offset - last_slot_pointer_offset
 
     @classmethod
     def empty(cls, block_number: int):

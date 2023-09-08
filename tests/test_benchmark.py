@@ -1,13 +1,12 @@
 import logging
-import string
 import threading
 from concurrent.futures.thread import ThreadPoolExecutor
-import random
 from typing import List
 from unittest import TestCase
 
 from apps.broker.db import BrokerDb, DbRecord
 from tests.profiler_utils import profile
+from tests.test_utils import random_string
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +62,7 @@ class TestBenchmark(TestCase):
             self.test_should_run_benchmark()
 
     def _write_init_data_to_db(self, records_count: int) -> List[DbRecord]:
-        records = [DbRecord(id=self._random_string(5), data=self._random_string(10)) for _ in range(records_count)]
+        records = [DbRecord(id=random_string(5), data=random_string(10)) for _ in range(records_count)]
         for rec_idx in range(self.records_count):
             self.db.append_record(records[rec_idx])
 
@@ -73,7 +72,3 @@ class TestBenchmark(TestCase):
         for rec in self.records:
             self.db.append_record(rec)
         self.should_stop.set()
-
-    @staticmethod
-    def _random_string(length=10):
-        return ''.join([random.choice(string.ascii_uppercase + string.digits) for _ in range(length)])
