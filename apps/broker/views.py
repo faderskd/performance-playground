@@ -1,13 +1,13 @@
 from flask import Blueprint, request, jsonify
 from pydantic import ValidationError
 
-from apps.broker.db import BrokerDb, DbRecord
+from apps.broker.storage_engine import DbEngine, DbRecord
 from apps.broker.models import Record
 
 FILE_NAME = 'db' # TODO move to config
 
 app = Blueprint('broker', __name__, template_folder='templates', url_prefix='/broker')
-db = BrokerDb(FILE_NAME)
+db = DbEngine(FILE_NAME)
 
 
 @app.route('/append/', methods=['POST'])

@@ -3,19 +3,19 @@ import os
 import random
 from unittest import TestCase
 
-from apps.broker.db import BrokerDb, DbRecord
+from apps.broker.storage_engine import DbEngine, DbRecord
 from tests.test_utils import random_string
 
 logger = logging.getLogger(__name__)
 
 
-class TestDb(TestCase):
+class TestDbEngine(TestCase):
     def setUp(self) -> None:
         dir_path = os.path.dirname(os.path.realpath(__file__))
         test_db_file_path = os.path.join(dir_path, 'db')
         if os.path.exists(test_db_file_path):
             os.remove(test_db_file_path)
-        self.db = BrokerDb(test_db_file_path)
+        self.db = DbEngine(test_db_file_path)
 
     def test_should_properly_store_data(self):
         # when

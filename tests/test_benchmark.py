@@ -4,7 +4,7 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from typing import List
 from unittest import TestCase
 
-from apps.broker.db import BrokerDb, DbRecord
+from apps.broker.storage_engine import DbEngine, DbRecord
 from tests.profiler_utils import profile
 from tests.test_utils import random_string
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class TestBenchmark(TestCase):
     def setUp(self) -> None:
         # TODO remove db file or create a temporary one
-        self.db = BrokerDb()
+        self.db = DbEngine()
         self.records_count = 100_000
         self.should_stop = threading.Event()
         self.records = self._write_init_data_to_db(self.records_count)

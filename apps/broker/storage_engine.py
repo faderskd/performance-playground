@@ -50,7 +50,7 @@ class DbRecord:
 
 @public
 @dataclass
-class DbRecordIndex:
+class DbRecordPointer:
     block: int
     slot: int
 
@@ -62,7 +62,7 @@ class DbBlock:
         self._slot_pointers = slot_pointers
         self._data = data
 
-    def add_slot(self, slot_data: bytearray) -> DbRecordIndex:
+    def add_slot(self, slot_data: bytearray) -> DbRecordPointer:
         # update number of slots
         self._data[:BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES] = int(len(self._slot_pointers) + 1).to_bytes(
             BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES, INT_ENCODING)
@@ -82,7 +82,7 @@ class DbBlock:
         slot_pointer_end_offset = slot_pointer_start_offset + SLOT_POINTER_SIZE_BYTES
         self._data[slot_pointer_start_offset: slot_pointer_end_offset] = new_slot_pointer.to_binary()
         self._slot_pointers.append(new_slot_pointer)
-        return DbRecordIndex(self.block_number, len(self._slot_pointers) - 1)
+        return DbRecordPointer(self.block_number, len(self._slot_pointers) - 1)
 
     def has_space_for_data(self, data: bytes) -> bool:
         last_slot_pointer_offset = BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES + len(self._slot_pointers)  * SLOT_POINTER_SIZE_BYTES
@@ -157,7 +157,7 @@ class HeapFile:
             return 0
         return (last_offset - DB_FILE_HEADER_SIZE_BYTES) // BLOCK_SIZE_BYTES
 
-    def get_block(self, index: DbRecordIndex) -> DbBlock:
+    def get_block(self, index: DbRecordPointer) -> DbBlock:
         block_offset = DB_FILE_HEADER_SIZE_BYTES + index.block * BLOCK_SIZE_BYTES
         if self._file.seek(0, os.SEEK_END) < block_offset - BLOCK_SIZE_BYTES:
             raise InvalidOffsetExeption(f'Index {index} produces invalid offset while searching database block')
@@ -167,7 +167,7 @@ class HeapFile:
 
 
 @public
-class BrokerDb:
+class DbEngine:
     def __init__(self, heap_file_path: str):
         self._db_file_path = heap_file_path
         self._create_heap_file(self._db_file_path)
@@ -190,7 +190,7 @@ class BrokerDb:
                 heap_file.save(working_block)
             return index
 
-    def read_record(self, index: DbRecordIndex) -> DbRecord:
+    def read_record(self, index: DbRecordPointer) -> DbRecord:
         with open(self._db_file_path, 'rb') as file:
             heap_file = HeapFile(file)
             working_block = heap_file.get_block(index)
