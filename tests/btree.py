@@ -1,12 +1,26 @@
-
 from apps.broker.b_tree_index import BTree
 
 tree = BTree()
-tree.insert(10, "key1")
-tree.insert(4, "key1")
-tree.insert(0, "key1")
-tree.insert(7, "key1")
-tree.insert(2, "key1")
-tree.insert(2, "key1")
+
+tree.insert(1, "val2")
+tree.insert(20, "val2")
+tree.insert(10, "val3")
+tree.insert(100, "val4")
+tree.insert(5, "val5")
+tree.insert(6, "val6")
+tree.insert(7, "val7")
+tree.insert(2, "val8")
+tree.insert(2, "val9")
+tree.insert(2, "val10")
+tree.insert(2, "val11")
+tree.insert(2, "val12")
+tree.insert(2, "val13")
+tree.insert(2, "val14")
+tree.insert(2, "val15")
+tree.insert(0, "val16")
+tree.insert(0, "val17")
+tree.insert(0, "val18")
+tree.insert(0, "val19")
+tree.insert(0, "val20")
 
 tree.print()

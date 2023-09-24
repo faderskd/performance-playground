@@ -1,7 +1,7 @@
 import typing
 from collections import defaultdict
 
-MAX_KEYS = 5
+MAX_KEYS = 3
 
 
 class BTreeNode:
@@ -9,6 +9,44 @@ class BTreeNode:
         self.children: typing.List[BTreeNode] = []
         self.keys: typing.List[int] = []
 
+    def insert(self, key, value: str) -> typing.Optional['BTreeNode']:
+        for i in range(len(self.keys)):
+            if self.keys[i] >= key:
+                maybe_new_node = self.children[i].insert(key, value)
+                break
+        else:
+            maybe_new_node = self.children[-1].insert(key, value)
+
+        if maybe_new_node:
+            first_key = maybe_new_node.keys[0]
+            for i in range(len(self.keys)):
+                if self.keys[i] >= first_key:
+                    self.keys.insert(i, first_key)
+                    self.children = self.children[:i] + maybe_new_node.children + self.children[i + 1:]
+                    break
+            else:
+                self.keys.append(first_key)
+                self.children.pop()
+                self.children.extend(maybe_new_node.children)
+
+        if len(self.keys) > MAX_KEYS:
+            mid = (len(self.keys) + 1) // 2
+            child_mid = (len(self.children) + 1) // 2
+            left_keys, right_keys = self.keys[:mid], self.keys[mid + 1:]
+            left_children, right_children = self.children[:child_mid], self.children[child_mid:]
+            left_child = BTreeNode()
+            left_child.keys = left_keys
+            left_child.children = left_children
+            right_child = BTreeNode()
+            right_child.keys = right_keys
+            right_child.children = right_children
+            parent = BTreeNode()
+            parent.keys = [self.keys[mid]]
+            parent.children = [left_child, right_child]
+            return parent
+
+    def __repr__(self):
+        return str(self.keys)
 
 class BTreeNodeLeaf(BTreeNode):
     def __init__(self):
@@ -26,9 +64,9 @@ class BTreeNodeLeaf(BTreeNode):
             self.values.append(value)
 
         if len(self.keys) > MAX_KEYS:
-            mid = len(self.keys) // 2
+            mid = (len(self.keys) + 1) // 2
             left_keys, right_keys = self.keys[:mid], self.keys[mid:]
-            left_values, right_values = self.keys[:mid], self.keys[mid:]
+            left_values, right_values = self.values[:mid], self.values[mid:]
             left_child = BTreeNodeLeaf()
             left_child.keys = left_keys
             left_child.values = left_values
@@ -40,6 +78,8 @@ class BTreeNodeLeaf(BTreeNode):
             parent.children = [left_child, right_child]
             return parent
 
+    def __repr__(self):
+        return str(self.keys)
 
 class BTree:
     def __init__(self):
