@@ -1,7 +1,13 @@
 import typing
 from collections import defaultdict
+from dataclasses import dataclass
 
 MAX_KEYS = 3
+
+
+@dataclass
+class DeleteResult:
+    new_first: typing.Optional[int]
 
 
 class BTreeNode:
@@ -9,7 +15,7 @@ class BTreeNode:
         self.children: typing.List[BTreeNode] = []
         self.keys: typing.List[int] = []
 
-    def insert(self, key, value: str) -> typing.Optional['BTreeNode']:
+    def insert(self, key: int, value: str) -> typing.Optional['BTreeNode']:
         for i in range(len(self.keys)):
             if self.keys[i] >= key:
                 maybe_new_node = self.children[i].insert(key, value)
@@ -45,8 +51,25 @@ class BTreeNode:
             parent.children = [left_child, right_child]
             return parent
 
+    def delete(self, key: int) -> typing.Optional[DeleteResult]:
+        for i in range(len(self.keys)):
+            if self.keys[i] > key:
+                delete_res = self.children[i].delete(key)
+                if delete_res:
+                    if i > 0 and self.keys[i - 1] == key:
+                        self.keys[i - 1] = delete_res.new_first
+                    break
+        else:
+            delete_res = self.children[-1].delete(key)
+            if delete_res and self.keys[-1] == key:
+                self.keys[-1] = delete_res.new_first
+
+        # TODO: handle rebalance
+        return delete_res
+
     def __repr__(self):
         return str(self.keys)
+
 
 class BTreeNodeLeaf(BTreeNode):
     def __init__(self):
@@ -78,8 +101,22 @@ class BTreeNodeLeaf(BTreeNode):
             parent.children = [left_child, right_child]
             return parent
 
+    def delete(self, key: int) -> typing.Optional[DeleteResult]:
+        for i in range(len(self.keys)):
+            if self.keys[i] == key:
+                self.keys.pop(i)
+                break
+        else:
+            raise NoSuchKeyException(f'No key {key} found in a tree')
+
+        half_full = len(self.keys) >= MAX_KEYS // 2
+        if not half_full:
+            pass  # TODO: handle rebalance
+        return DeleteResult(self.keys[0])
+
     def __repr__(self):
         return str(self.keys)
+
 
 class BTree:
     def __init__(self):
@@ -91,6 +128,9 @@ class BTree:
         if maybe_new_root:
             self.root = maybe_new_root
             self.height += 1
+
+    def delete(self, key: int):
+        self.root.delete(key)
 
     def print(self):
         container: typing.Dict[int, typing.List[BTreeNode]] = defaultdict(list)
@@ -105,3 +145,8 @@ class BTree:
         container[level].append(root)
         for c in root.children:
             self._dfs(c, level + 1, container)
+
+
+class NoSuchKeyException(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
