@@ -118,6 +118,101 @@ class TestBTree(unittest.TestCase):
         # then
         self.assertEqual(self._dfs(self.tree), [29, 16, 2, 16, 25, 30, 29, 30])
 
+    def test_should_properly_delete_from_tree_from_both_sides_including_leafs_and_indexes(self):
+        # given
+        self.tree.insert(1, "val1")
+        self.tree.insert(100, "val1")
+        self.tree.insert(50, "val1")
+        self.tree.insert(75, "val1")
+        self.tree.insert(25, "val1")
+        self.tree.insert(90, "val1")
+        self.tree.insert(12, "val1")
+        self.tree.insert(40, "val1")
+        self.tree.insert(80, "val1")
+        self.tree.insert(95, "val1")
+        self.tree.insert(6, "val1")
+        self.tree.insert(77, "val1")
+        self.tree.insert(200, "val1")
+        self.tree.insert(78, "val1")
+        self.tree.insert(89, "val1")
+        self.tree.insert(41, "val1")
+        self.tree.insert(42, "val1")
+        self.tree.insert(43, "val1")
+        self.tree.insert(44, "val1")
+        self.tree.insert(81, "val1")
+        self.tree.insert(82, "val1")
+        self.tree.insert(83, "val1")
+        self.tree.insert(76, "val1")
+        self.tree.insert(74, "val1")
+        self.tree.insert(111, "val1")
+        self.tree.insert(112, "val1")
+
+        # when
+        self.tree.delete(50)
+        self.tree.delete(74)
+        self.tree.delete(44)
+        self.tree.delete(75)
+        self.tree.delete(41)
+        self.tree.delete(43)
+
+        # then
+        self.assertEqual(self._dfs(self.tree), [42, 78, 90, 25, 1, 6 ,12, 25, 40, 76, 42, 76, 77, 81, 83, 78, 80, 81, 82, 83, 89, 100, 112, 90, 95, 100, 111, 112, 200])
+
+        # when
+        self.tree.insert(50, "val1")
+        self.tree.insert(48, "val2")
+        self.tree.insert(49, "val3")
+
+        self.tree.delete(25)
+        self.tree.delete(40)
+        self.tree.delete(6)
+        self.tree.delete(1)
+        self.tree.delete(111)
+        self.tree.delete(90)
+        self.tree.delete(78)
+        self.tree.delete(112)
+        self.tree.delete(95)
+
+        # then
+        self.assertEqual(self._dfs(self.tree), [49, 80, 100, 42, 12, 42, 48, 76, 49, 50, 76, 77, 81, 83, 80, 81, 82, 83, 89, 200, 100, 200])
+
+        # when
+        self.tree.delete(100)
+        self.tree.insert(78, "val1")
+        self.tree.insert(79, "val2")
+
+        self.tree.delete(80)
+        self.tree.delete(82)
+        self.tree.delete(76)
+        self.tree.delete(79)
+
+        # then
+        self.assertEqual(self._dfs(self.tree), [49, 78, 83, 42, 12, 42, 48, 77, 49, 50, 77, 81, 78, 81, 200, 83, 89, 200])
+
+        # when
+        self.tree.insert(60, "val1")
+        self.tree.insert(61, "val1")
+        self.tree.insert(62, "val1")
+        self.tree.insert(63, "val1")
+        self.tree.insert(64, "val1")
+        self.tree.insert(65, "val1")
+
+        self.tree.delete(49)
+        self.tree.delete(64)
+
+        # then
+        self.assertEqual(self._dfs(self.tree), [78, 50, 65, 42, 12, 42, 48, 60, 62, 50, 60, 61, 62, 63, 77, 65, 77, 83, 81, 78, 81, 200, 83, 89, 200])
+
+        # when
+        self.tree.delete(65)
+        self.tree.delete(50)
+
+        # then
+        self.assertEqual(self._dfs(self.tree), [78, 60, 62, 42, 12, 42, 48, 61, 60, 61, 77, 62, 63, 77, 83, 81, 78, 81, 200, 83, 89, 200])
+
+        # when
+
+
     def _dfs(self, tree: BTree) -> typing.List[int]:
         dfs_container = []
         self._dfs_helper(tree.root, dfs_container)
