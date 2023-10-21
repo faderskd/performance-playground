@@ -35,7 +35,7 @@ class TestBTree(unittest.TestCase):
         self.assertEqual(self._dfs(self.tree),
                          [2, 2, 6, 0, 1, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 5, 20, 6, 7, 10, 20, 100])
 
-    def test_should_properly_delete_from_tree_case1(self):
+    def test_should_properly_delete_from_tree_and_borrow_from_siblings(self):
         # given
         self.tree.insert(10, "val1")
         self.tree.insert(29, "val2")

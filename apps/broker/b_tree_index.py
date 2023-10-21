@@ -6,7 +6,7 @@ from dataclasses import dataclass
 @dataclass
 class DeleteResult:
     new_first: typing.Optional[int]
-    not_enough_keys: bool = False
+    condition_of_tree_valid: bool = True
     leaf: bool = False
 
 
@@ -66,48 +66,69 @@ class BTreeNode:
         if not delete_res:
             return
 
-        # we are parent, child has not enough keys, so try to borrow from siblings
-        if delete_res.leaf and delete_res.not_enough_keys:
+        # child has not enough keys/children, so try to borrow from siblings
+        if not delete_res.condition_of_tree_valid:
             if i > 0 and self.children[i - 1]._has_enough_to_lend():
                 # borrow right-most key from left child
                 self.children[i].keys.insert(0, self.children[i - 1].keys.pop())
-                self.children[i].values.insert(0, self.children[i - 1].values.pop())
+                # index nodes has no values
+                if delete_res.leaf:
+                    self.children[i].values.insert(0, self.children[i - 1].values.pop())
+                # but have children
+                else:
+                    self.children[i].children.insert(0, self.children[i - 1].children.pop())
+                    self.keys[i - 1] = delete_res.new_first = self.children[i].keys[0]
             elif i + 1 < len(self.children) and self.children[i + 1]._has_enough_to_lend():
                 # borrow left-most key from right child
                 self.children[i].keys.append(self.children[i + 1].keys.pop(0))
-                self.children[i].values.append(self.children[i + 1].values.pop(0))
+                # index nodes has no values
+                if delete_res.leaf:
+                    self.children[i].values.append(self.children[i + 1].values.pop(0))
+                # but have children
+                else:
+                    self.children[i].children.append(self.children[i + 1].children.pop(0))
+                    self.keys[i] = delete_res.new_first = self.children[i].keys[-1]
             else:
                 # we have empty child !
                 pass
 
-        # we are parent, we deleted from leaf and try to remove any empty child
+        # we are parent, we deleted from leaf and tried to restore the tree condition
         if delete_res.leaf:
-            self.children = [c for c in self.children if c.keys]
-            self.keys = []
-            # rearrange our keys
-            for i in range(1, len(self.children)):
-                self.keys.append(self.children[i].keys[0])
-            if self.children:
-                delete_res.new_first = self.children[0].keys[0]
-
-        # we are parent, we deleted from leaf, tried to borrow, but it didn't help, we rearranged the keys and it is still bad
-        if not self._is_at_least_half_full():
-            delete_res.not_enough_keys = True
-        # condition of the b+tree is maintained
+            delete_res.new_first = self._rearrange_keys_and_get_new_first()
+        # we are not a parent, we deleted from leaf and tried to restore the tree condition
         else:
-            delete_res.not_enough_keys = False
-
-
+            delete_res.new_first = self.children[i]._rearrange_keys_and_get_new_first()
+            # self._replace_key_if_needed()
 
         # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
-        if not delete_res.leaf and not delete_res.not_enough_keys:
-            for i in range(len(self.keys)):
-                if self.keys[i] == key:
-                    self.keys[i] = delete_res.new_first
+        if not delete_res.leaf and delete_res.condition_of_tree_valid:
+            self._replace_key_if_needed(key, delete_res.new_first)
 
+        # condition of the b+tree is maintained
+        if self._is_at_least_half_full():
+            delete_res.condition_of_tree_valid = True
+        else:
+            delete_res.condition_of_tree_valid = False
 
         delete_res.leaf = False
         return delete_res
+
+    def _replace_key_if_needed(self, old: int, new: int):
+        for i in range(len(self.keys)):
+            if self.keys[i] == old:
+                self.keys[i] = new
+
+    def _rearrange_keys_and_get_new_first(self) -> typing.Optional[int]:
+        self.children = [c for c in self.children if c.keys]
+        self.keys = []
+        # rearrange our keys
+        if len(self.children) == 1:
+            self.keys.append(self.children[0].keys[0])
+        for i in range(1, len(self.children)):
+            self.keys.append(self.children[i].keys[0])
+        if self.children:
+            return self.children[0].keys[0]
+        return None
 
     def _has_enough_to_lend(self):
         return len(self.keys) > self.max_keys // 2
@@ -173,15 +194,16 @@ class BTreeNodeLeaf(BTreeNode):
             # case when after deletion b+tree condition is maintained in leaf, nothing to do more
             return DeleteResult(self.keys[0], leaf=True)
         # case when there is not enough elements in leaf after deletion
-        if self.keys:
-            return DeleteResult(self.keys[0], not_enough_keys=True, leaf=True)
-        return DeleteResult(None, not_enough_keys=True, leaf=True)
+        if not self.keys:
+            return DeleteResult(None, condition_of_tree_valid=False, leaf=True)
+        return DeleteResult(self.keys[0], condition_of_tree_valid=False, leaf=True)
 
     def __repr__(self):
         return str(self.keys)
 
     def _is_at_least_half_full(self):
         return len(self.keys) >= self.max_keys // 2
+
 
 class BTree:
     def __init__(self, max_keys: int):
