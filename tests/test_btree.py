@@ -35,7 +35,7 @@ class TestBTree(unittest.TestCase):
         self.assertEqual(self._dfs(self.tree),
                          [2, 2, 6, 0, 1, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 5, 20, 6, 7, 10, 20, 100])
 
-    def test_should_properly_delete_from_tree_and_borrow_from_siblings(self):
+    def test_should_properly_delete_from_tree_leafs_and_borrow_from_siblings(self):
         # given
         self.tree.insert(10, "val1")
         self.tree.insert(29, "val2")
@@ -63,7 +63,7 @@ class TestBTree(unittest.TestCase):
         # then
         self.assertEqual(self._dfs(self.tree), [40, 10, 15, 0, 10, 15, 60, 40, 60])
 
-    def test_should_properly_delete_from_tree_case2(self):
+    def test_should_properly_delete_from_tree_leafs_and_merge_with_siblings(self):
         # given
         self.tree.insert(10, "val1")
         self.tree.insert(29, "val2")
@@ -87,6 +87,36 @@ class TestBTree(unittest.TestCase):
 
         # then
         self.assertEqual(self._dfs(self.tree), [16, 2, 10, 0, 1, 2, 5, 10, 15, 25, 16, 25])
+
+    def test_should_properly_delete_from_tree_indexes_and_borrow_from_left_siblings(self):
+        # given
+        self.tree.insert(10, "val1")
+        self.tree.insert(29, "val2")
+        self.tree.insert(40, "val3")
+        self.tree.insert(25, "val4")
+        self.tree.insert(0, "val5")
+        self.tree.insert(5, "val6")
+        self.tree.insert(60, "val7")
+        self.tree.insert(2, "val8")
+        self.tree.insert(15, "val9")
+        self.tree.insert(16, "val10")
+        self.tree.insert(1, "val11")
+        self.tree.insert(30, "val12")
+
+        # expect
+        self.assertEqual(self._dfs(self.tree), [16, 2, 10, 0, 1, 2, 5, 10, 15, 29, 40, 16, 25, 29, 30, 40, 60])
+
+        # when
+        self.tree.delete(10)
+        self.tree.delete(15)
+        self.tree.delete(0)
+        self.tree.delete(1)
+        self.tree.delete(60)
+        self.tree.delete(40)
+        self.tree.delete(5)
+
+        # then
+        self.assertEqual(self._dfs(self.tree), [29, 16, 2, 16, 25, 30, 29, 30])
 
     def _dfs(self, tree: BTree) -> typing.List[int]:
         dfs_container = []
