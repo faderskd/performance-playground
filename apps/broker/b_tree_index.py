@@ -66,6 +66,9 @@ class BTreeNode:
         if not delete_res:
             return
 
+        # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
+        self._replace_key_if_needed(key, delete_res.new_first)
+
         # child has not enough keys/children, so try to borrow from siblings
         if delete_res.leaf and not delete_res.condition_of_tree_valid:
             if i > 0 and self.children[i - 1]._has_enough_to_lend():
@@ -83,29 +86,40 @@ class BTreeNode:
         if not delete_res.leaf and not delete_res.condition_of_tree_valid:
             if i > 0 and self.children[i - 1]._has_enough_to_lend():
                 # borrow right-most key from left child
-                self.children[i].keys.insert(0, self.children[i - 1].keys.pop())
                 self.children[i].children.insert(0, self.children[i - 1].children.pop())
-                self.keys[i - 1] = delete_res.new_first = self.children[i].keys[0]
+                self.children[i].keys[0] = self.keys[i - 1]
+                self.keys[i - 1] = delete_res.new_first = self.children[i - 1].keys.pop()
             elif i + 1 < len(self.children) and self.children[i + 1]._has_enough_to_lend():
                 # borrow left-most key from right child
-                self.children[i].keys.append(self.children[i + 1].keys.pop(0))
                 self.children[i].children.append(self.children[i + 1].children.pop(0))
-                self.keys[i] = delete_res.new_first = self.children[i].keys[-1]
+                self.children[i].keys[-1] = self.keys[i]
+                self.keys[i] = delete_res.new_first = self.children[i + 1].keys.pop(0)
             else:
                 # we still have the empty child and have to merge
-                print("Have to shrink the treee")
+                if i > 0:
+                    # merge with left child
+                    new_children = self.children[i - 1].children + self.children[i].children
+                    new_keys = self.children[i - 1].keys + [self.keys.pop(i)]
+                    self.children[i - 1].children = new_children
+                    self.children[i - 1].keys = new_keys
+                    self.children.pop(i)
+                elif i + 1 < len(self.children):
+                    # merge with right child
+                    new_children = self.children[i].children + self.children[i + 1].children
+                    new_keys = [self.keys.pop(i)] + self.children[i + 1].keys
+                    self.children[i + 1].children = new_children
+                    self.children[i + 1].keys = new_keys
+                    self.children.pop(i)
+                else:
+                    print("Impossibru...")
 
         # we are a parent, we deleted from leaf and tried to restore the tree condition
         if delete_res.leaf and not delete_res.condition_of_tree_valid:
             delete_res.new_first = self._rearrange_keys_and_get_new_first()
         # we are not a parent, we deleted from leaf and tried to restore the tree condition
-        elif not delete_res.condition_of_tree_valid:
-            delete_res.new_first = self.children[i]._rearrange_keys_and_get_new_first()
-            # self._replace_key_if_needed()
-
-        # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
-        if delete_res.condition_of_tree_valid:
-            self._replace_key_if_needed(key, delete_res.new_first)
+        # elif not delete_res.condition_of_tree_valid:
+        #     delete_res.new_first = self.children[i]._rearrange_keys_and_get_new_first()
+        # self._replace_key_if_needed()
 
         delete_res.condition_of_tree_valid = self._is_at_least_half_full()
         delete_res.leaf = False

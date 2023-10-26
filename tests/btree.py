@@ -2,7 +2,6 @@ from apps.broker.b_tree_index import BTree
 
 tree = BTree(3)
 
-
 tree.insert(1, "val1")
 tree.insert(100, "val1")
 tree.insert(50, "val1")
@@ -30,7 +29,6 @@ tree.insert(74, "val1")
 tree.insert(111, "val1")
 tree.insert(112, "val1")
 
-# removing from right
 tree.delete(50)
 tree.delete(74)
 tree.delete(44)
@@ -51,33 +49,7 @@ tree.delete(90)
 tree.delete(78)
 tree.delete(112)
 tree.delete(95)
-
-
 tree.delete(100)
-tree.insert(78,"val1")
-tree.insert(79, "val2")
-
-tree.delete(80)
-tree.delete(82)
-tree.delete(76)
-tree.delete(79)
-
-tree.insert(60,"val1")
-tree.insert(61,"val1")
-tree.insert(62,"val1")
-tree.insert(63,"val1")
-tree.insert(64,"val1")
-tree.insert(65,"val1")
-
-tree.delete(49)
-tree.delete(64)
-tree.delete(65)
-tree.delete(50)
-
-tree.delete(62)
-tree.delete(83)
-
-tree.delete(89)
 tree.print()
 print("-------------------------------------")
 # tree.print_leafs()
