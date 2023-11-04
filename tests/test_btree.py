@@ -211,7 +211,39 @@ class TestBTree(unittest.TestCase):
         self.assertEqual(self._dfs(self.tree), [78, 60, 62, 42, 12, 42, 48, 61, 60, 61, 77, 62, 63, 77, 83, 81, 78, 81, 200, 83, 89, 200])
 
         # when
+        self.tree.delete(83)
+        self.tree.delete(89)
 
+        # then
+        self.assertEqual(self._dfs(self.tree), [62, 60, 42, 12, 42, 48, 61, 60, 61, 78, 77, 62, 63, 77, 81, 200, 78, 81, 200])
+
+        # when
+        self.tree.delete(60)
+        self.tree.delete(77)
+        self.tree.delete(63)
+
+        # then
+        self.assertEqual(self._dfs(self.tree), [61, 78, 42, 12, 42, 48, 62, 61, 62, 81, 200, 78, 81, 200])
+
+        # when
+        self.tree.delete(61)
+        self.tree.delete(78)
+        self.tree.delete(200)
+        self.tree.delete(12)
+        self.tree.delete(81)
+
+        self.assertEqual(self._dfs(self.tree), [48, 62, 42, 48, 62])
+
+        # when
+        self.tree.delete(48)
+        self.tree.delete(62)
+
+        self.assertEqual(self._dfs(self.tree), [42])
+
+        # when
+        self.tree.delete(42)
+
+        self.assertEqual(self._dfs(self.tree), [])
 
     def _dfs(self, tree: BTree) -> typing.List[int]:
         dfs_container = []
@@ -219,6 +251,8 @@ class TestBTree(unittest.TestCase):
         return dfs_container
 
     def _dfs_helper(self, node: BTreeNode, container: typing.List):
+        if not node:
+            return []
         container.extend(node.keys)
         for n in node.children:
             self._dfs_helper(n, container)
