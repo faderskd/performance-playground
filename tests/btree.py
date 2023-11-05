@@ -1,75 +1,39 @@
-from apps.broker.b_tree_index import BTree
+import random
+import typing
 
-tree = BTree(3)
-
-tree.insert(1, "val1")
-tree.insert(100, "val1")
-tree.insert(50, "val1")
-tree.insert(75, "val1")
-tree.insert(25, "val1")
-tree.insert(90, "val1")
-tree.insert(12, "val1")
-tree.insert(40, "val1")
-tree.insert(80, "val1")
-tree.insert(95, "val1")
-tree.insert(6, "val1")
-tree.insert(77, "val1")
-tree.insert(200, "val1")
-tree.insert(78, "val1")
-tree.insert(89, "val1")
-tree.insert(41, "val1")
-tree.insert(42, "val1")
-tree.insert(43, "val1")
-tree.insert(44, "val1")
-tree.insert(81, "val1")
-tree.insert(82, "val1")
-tree.insert(83, "val1")
-tree.insert(76, "val1")
-tree.insert(74, "val1")
-tree.insert(111, "val1")
-tree.insert(112, "val1")
-
-# when
-tree.delete(50)
-tree.delete(74)
-tree.delete(44)
-tree.delete(75)
-tree.delete(41)
-tree.delete(43)
-
-tree.insert(50, "val1")
-tree.insert(48, "val2")
-tree.insert(49, "val3")
-
-tree.delete(25)
-tree.delete(40)
-tree.delete(6)
-tree.delete(1)
-tree.delete(111)
-tree.delete(90)
-tree.delete(78)
-tree.delete(112)
-tree.delete(95)
-
-tree.delete(100)
-tree.insert(78, "val1")
-tree.insert(79, "val2")
-
-tree.delete(80)
-tree.delete(82)
-tree.delete(76)
-tree.delete(79)
-
-tree.insert(60, "val1")
-tree.insert(61, "val1")
-tree.insert(62, "val1")
-tree.insert(63, "val1")
-tree.insert(64, "val1")
-tree.insert(65, "val1")
+from apps.broker.b_tree_index import BTree, BTreeNode
 
 
+def dfs(tree: BTree) -> typing.List[int]:
+    dfs_container = []
+    dfs_helper(tree.root, dfs_container)
+    return dfs_container
+
+
+def dfs_helper(node: BTreeNode, container: typing.List):
+    if not node:
+        return []
+    container.extend(node.keys)
+    for n in node.children:
+        dfs_helper(n, container)
+
+
+tree = BTree(4)
+
+large_array = [i for i in range(100000)]
+large_array_as_set = set(large_array)
+random.shuffle(large_array)
+
+for k in large_array:
+    tree.insert(k, "val")
+
+random.shuffle(large_array)
+
+for i, k in enumerate(large_array):
+    if len(large_array) - i < 10:
+        break
+    tree.delete(k)
+    large_array_as_set.remove(k)
+
+assert tree.get_leafs() == sorted(large_array_as_set)
 tree.print()
-
-tree.print_leafs()
-print("-------------------------------------")
-# tree.print_leafs()
