@@ -474,6 +474,24 @@ class TestBTree(unittest.TestCase):
         for k in large_array[len(large_array) - 100:]:
             self.assertEqual(tree.find(k), f"val{k}")
 
+    def test_should_work_for_generic_type(self):
+        # given
+        tree = BTree(3)
+
+        # when
+        tree.insert((4, 1), (1, 4))
+        tree.insert((0, 3), (3, 0))
+        tree.insert((0, 1), (1, 0))
+        tree.insert((0, 2), (2, 0))
+        tree.insert((1, 0), (0, 1))
+        tree.insert((1, 1), (1, 1))
+
+        # then
+        self.assertEqual(tree.find((0, 1)), (1, 0))
+        self.assertEqual(tree.find((4, 1)), (1, 4))
+        self.assertEqual(tree.find((0, 3)), (3, 0))
+
+        self.assertEqual(tree.get_leafs(), [(0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (4, 1)])
 
     def _dfs(self, tree: BTree) -> typing.List[int]:
         dfs_container = []

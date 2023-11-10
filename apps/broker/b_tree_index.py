@@ -3,21 +3,23 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 
+KEY = typing.TypeVar('KEY')
+VALUE = typing.TypeVar('VALUE')
+
 @dataclass
 class DeleteResult:
-    new_first: typing.Optional[int]
+    new_first: typing.Optional[KEY]
     condition_of_tree_valid: bool = True
     leaf: bool = False
-
 
 class BTreeNode:
     def __init__(self, max_keys: int):
         self.children: typing.List[BTreeNode] = []
-        self.keys: typing.List[int] = []
-        self.values: typing.Optional[typing.List[str]] = None  # None in non-leaf nodes
+        self.keys: typing.List[KEY] = []
+        self.values: typing.Optional[typing.List[VALUE]] = None  # None in non-leaf nodes
         self.max_keys = max_keys
 
-    def insert(self, key: int, value: str) -> typing.Optional['BTreeNode']:
+    def insert(self, key: KEY, value: VALUE) -> typing.Optional['BTreeNode']:
         for i in range(len(self.keys)):
             if self.keys[i] >= key:
                 maybe_new_node = self.children[i].insert(key, value)
@@ -53,7 +55,7 @@ class BTreeNode:
             parent.children = [left_child, right_child]
             return parent
 
-    def delete(self, key: int) -> typing.Optional[DeleteResult]:
+    def delete(self, key: KEY) -> typing.Optional[DeleteResult]:
         # search for key to delete
         for i in range(len(self.keys)):
             if self.keys[i] > key:
@@ -139,13 +141,14 @@ class BTreeNode:
 
         # we are a parent, we deleted from leaf and tried to restore the tree condition
         if delete_res.leaf:
-            delete_res.condition_of_tree_valid = self.is_at_least_half_full() and all(c.is_at_least_half_full() for c in self.children)
+            delete_res.condition_of_tree_valid = self.is_at_least_half_full() and all(
+                c.is_at_least_half_full() for c in self.children)
         else:
             delete_res.condition_of_tree_valid = self.is_at_least_half_full()
         delete_res.leaf = False
         return delete_res
 
-    def find(self, key: int) -> str:
+    def find(self, key: KEY) -> VALUE:
         for i in range(len(self.keys)):
             if self.keys[i] > key:
                 return self.children[i].find(key)
@@ -154,13 +157,13 @@ class BTreeNode:
             res = self.children[i].find(key)
         return res
 
-    def _replace_key_if_needed(self, old: int, new: int):
+    def _replace_key_if_needed(self, old: KEY, new: KEY):
         for i in range(len(self.keys)):
             if self.keys[i] == old:
                 self.keys[i] = new
                 break
 
-    def _rearrange_keys_and_get_new_first(self) -> typing.Optional[int]:
+    def _rearrange_keys_and_get_new_first(self) -> typing.Optional[KEY]:
         new_children = []
         for c in self.children:
             assert isinstance(c, BTreeNodeLeaf)
@@ -196,13 +199,13 @@ class BTreeNode:
 
 
 class BTreeNodeLeaf(BTreeNode):
-    def __init__(self, max_keys: int):
+    def __init__(self, max_keys: KEY):
         super().__init__(max_keys)
         self.next: typing.Optional[BTreeNode] = None
         self.prev: typing.Optional[BTreeNode] = None
         self.values = []
 
-    def insert(self, key: int, value: str) -> typing.Optional[BTreeNode]:
+    def insert(self, key: KEY, value: VALUE) -> typing.Optional[BTreeNode]:
         for i in range(len(self.keys)):
             if self.keys[i] > key:
                 self.keys.insert(i, key)
@@ -237,7 +240,7 @@ class BTreeNodeLeaf(BTreeNode):
             parent.children = [left_child, right_child]
             return parent
 
-    def delete(self, key: int) -> typing.Optional[DeleteResult]:
+    def delete(self, key: KEY) -> typing.Optional[DeleteResult]:
         for i in range(len(self.keys)):
             if self.keys[i] == key:
                 self.keys.pop(i)
@@ -257,36 +260,35 @@ class BTreeNodeLeaf(BTreeNode):
     def is_at_least_half_full(self):
         return len(self.keys) >= self.max_keys // 2
 
-    def find(self, key: int) -> str:
+    def find(self, key: KEY) -> VALUE:
         for i in range(len(self.keys)):
             if self.keys[i] == key:
                 return self.values[i]
         raise NoSuchKeyException(f'No key {key} found in a tree')
-
 
     def __repr__(self):
         return str(self.keys)
 
 
 class BTree:
-    def __init__(self, max_keys: int):
+    def __init__(self, max_keys: KEY):
         self.root = BTreeNodeLeaf(max_keys)
         self.height = 1
 
-    def insert(self, key: int, value: str):
+    def insert(self, key: KEY, value: VALUE):
         maybe_new_root = self.root.insert(key, value)
         if maybe_new_root:
             self.root = maybe_new_root
             self.height += 1
 
-    def delete(self, key: int):
+    def delete(self, key: KEY):
         self.root.delete(key)
         if len(self.root.keys) in [0, 1] and len(self.root.children) == 1:
             self.root = self.root.children[0]
         elif not self.root.keys and not self.root.children:
             self.root = None
 
-    def find(self, key: int) -> str:
+    def find(self, key: KEY) -> VALUE:
         return self.root.find(key)
 
     def print(self):
