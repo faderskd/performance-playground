@@ -1,7 +1,10 @@
 # coding:utf-8
-
+import cProfile
 import os
+import pstats
+
 import click
+import snakeviz
 
 try:
     FileNotFoundError  # only available with python3
@@ -127,3 +130,4 @@ def test_cmd(failfast, verbosity, warnings):
         failfast=failfast,
         verbosity=verbosity
     ).run(test_suite)
+
