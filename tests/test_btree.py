@@ -1,3 +1,4 @@
+import random
 import typing
 import unittest
 
@@ -431,8 +432,48 @@ class TestBTree(unittest.TestCase):
         # then
         self.assertEqual(self._dfs(tree), [])
 
-    def test_random_deletes(self):
-        pass
+    def test_should_properly_remove_random_keys(self):
+        # given
+        tree = BTree(5)
+
+        large_array = [i for i in range(10000)]
+        large_array_as_set = set(large_array)
+        random.shuffle(large_array)
+
+        for k in large_array:
+            tree.insert(k, "val")
+
+        for i, k in enumerate(large_array):
+            # when
+            tree.delete(k)
+
+            # then
+            large_array_as_set.remove(k)
+            self.assertEqual(tree.get_leafs(), sorted(large_array_as_set))
+
+    def test_should_preserve_not_deleted_values(self):
+        # given
+        tree = BTree(5)
+
+        large_array = [i for i in range(10000)]
+        random.shuffle(large_array)
+
+        for k in large_array:
+            tree.insert(k, f"val{k}")
+
+        # when
+        for i, k in enumerate(large_array):
+            if len(large_array) - i <= 100:
+                break
+            tree.delete(k)
+
+        # then
+        self.assertEqual(len(tree.get_leafs()), 100)
+
+        # when
+        for k in large_array[len(large_array) - 100:]:
+            self.assertEqual(tree.find(k), f"val{k}")
+
 
     def _dfs(self, tree: BTree) -> typing.List[int]:
         dfs_container = []
