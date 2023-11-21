@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List
 
 from apps.broker.models import Record
-from apps.broker.utils import public, private
+from apps.broker.utils import public, private, package_private
 
 DB_FILE_HEADER_SIZE_BYTES = 1024
 BLOCK_SIZE_BYTES = 1024
@@ -17,7 +17,7 @@ STR_ENCODING = 'utf8'
 INT_ENCODING = 'big'
 
 
-@private
+@package_private
 @dataclass
 class DbSlotPointer:
     offset: int
