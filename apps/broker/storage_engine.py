@@ -1,4 +1,6 @@
+import io
 import os
+import typing
 
 from dataclasses import dataclass
 from typing import List
@@ -10,8 +12,8 @@ DB_FILE_HEADER_SIZE_BYTES = 1024
 BLOCK_SIZE_BYTES = 1024
 BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES = 2  # max 65536 slots
 SLOT_OFFSET_SIZE_BYTES = 2  # max 65536 offsets
-SLOT_LENGTH_SIZE = 2  # max 65536 chars
-SLOT_POINTER_SIZE_BYTES = SLOT_OFFSET_SIZE_BYTES + SLOT_LENGTH_SIZE
+SLOT_LENGTH_SIZE_BYTES = 2  # max 65536 chars
+SLOT_POINTER_SIZE_BYTES = SLOT_OFFSET_SIZE_BYTES + SLOT_LENGTH_SIZE_BYTES
 BLOCK_MAX_DATA_SIZE = (BLOCK_SIZE_BYTES - BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES - SLOT_POINTER_SIZE_BYTES)
 STR_ENCODING = 'utf8'
 INT_ENCODING = 'big'
@@ -25,8 +27,14 @@ class DbSlotPointer:
 
     def to_binary(self) -> bytes:
         return (int(self.offset).to_bytes(SLOT_OFFSET_SIZE_BYTES, INT_ENCODING) +
-                int(self.length).to_bytes(SLOT_LENGTH_SIZE, INT_ENCODING))
+                int(self.length).to_bytes(SLOT_LENGTH_SIZE_BYTES, INT_ENCODING))
 
+    @classmethod
+    def from_binary(cls, data: io.BytesIO) -> typing.Self:
+        return cls(
+            int.from_bytes(data.read(SLOT_OFFSET_SIZE_BYTES), INT_ENCODING),
+            int.from_bytes(data.read(SLOT_LENGTH_SIZE_BYTES), INT_ENCODING)
+        )
 
 @private
 @dataclass
@@ -97,7 +105,7 @@ class DbBlock:
         return cls(block_number=block_number, slot_pointers=[], data=bytearray(BLOCK_SIZE_BYTES))
 
     @classmethod
-    def from_binary(cls, block_number: int, binary_block: bytearray):
+    def from_binary(cls, block_number: int, binary_block: bytearray) -> typing.Self:
         number_of_slots = int.from_bytes(binary_block[:BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES], INT_ENCODING)
         slots_pointers_slice = slice(BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES,
                                      BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES + SLOT_POINTER_SIZE_BYTES * number_of_slots)
@@ -105,7 +113,7 @@ class DbBlock:
         slot_pointers = []
         for i in range(number_of_slots):
             offset_slice = slice(i * SLOT_POINTER_SIZE_BYTES, i * SLOT_POINTER_SIZE_BYTES + SLOT_OFFSET_SIZE_BYTES)
-            length_slice = slice(offset_slice.stop, offset_slice.stop + SLOT_LENGTH_SIZE)
+            length_slice = slice(offset_slice.stop, offset_slice.stop + SLOT_LENGTH_SIZE_BYTES)
             slot_pointers.append(
                 DbSlotPointer(
                     offset=int.from_bytes(binary_slots_pointers[offset_slice], INT_ENCODING),
