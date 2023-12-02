@@ -139,7 +139,8 @@ class BTreeNode:
 
         # we are a parent, we deleted from leaf and tried to restore the tree condition
         if delete_res.leaf:
-            delete_res.condition_of_tree_valid = self.is_at_least_half_full() and all(c.is_at_least_half_full() for c in self.children)
+            delete_res.condition_of_tree_valid = self.is_at_least_half_full() and all(
+                c.is_at_least_half_full() for c in self.children)
         else:
             delete_res.condition_of_tree_valid = self.is_at_least_half_full()
         delete_res.leaf = False
@@ -263,7 +264,6 @@ class BTreeNodeLeaf(BTreeNode):
                 return self.values[i]
         raise NoSuchKeyException(f'No key {key} found in a tree')
 
-
     def __repr__(self):
         return str(self.keys)
 
@@ -271,13 +271,11 @@ class BTreeNodeLeaf(BTreeNode):
 class BTree:
     def __init__(self, max_keys: int):
         self.root = BTreeNodeLeaf(max_keys)
-        self.height = 1
 
     def insert(self, key: int, value: str):
         maybe_new_root = self.root.insert(key, value)
         if maybe_new_root:
             self.root = maybe_new_root
-            self.height += 1
 
     def delete(self, key: int):
         self.root.delete(key)

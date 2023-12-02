@@ -2,7 +2,7 @@ import random
 import typing
 import unittest
 
-from apps.broker.b_tree_index import BTree, BTreeNode
+from apps.broker.in_memory_btree import BTree, BTreeNode
 
 
 class TestBTree(unittest.TestCase):

@@ -1,6 +1,5 @@
 import io
 import os
-import typing
 
 from dataclasses import dataclass
 from typing import List
@@ -30,7 +29,7 @@ class DbSlotPointer:
                 int(self.length).to_bytes(SLOT_LENGTH_SIZE_BYTES, INT_ENCODING))
 
     @classmethod
-    def from_binary(cls, data: io.BytesIO) -> typing.Self:
+    def from_binary(cls, data: io.BytesIO):
         return cls(
             int.from_bytes(data.read(SLOT_OFFSET_SIZE_BYTES), INT_ENCODING),
             int.from_bytes(data.read(SLOT_LENGTH_SIZE_BYTES), INT_ENCODING)
@@ -105,7 +104,7 @@ class DbBlock:
         return cls(block_number=block_number, slot_pointers=[], data=bytearray(BLOCK_SIZE_BYTES))
 
     @classmethod
-    def from_binary(cls, block_number: int, binary_block: bytearray) -> typing.Self:
+    def from_binary(cls, block_number: int, binary_block: bytearray):
         number_of_slots = int.from_bytes(binary_block[:BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES], INT_ENCODING)
         slots_pointers_slice = slice(BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES,
                                      BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES + SLOT_POINTER_SIZE_BYTES * number_of_slots)
