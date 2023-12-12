@@ -173,6 +173,7 @@ class HeapFile:
         return DbBlock.from_binary(index.block, binary_block)
 
 
+# TODO make it auto-closable
 @public
 class DbEngine:
     def __init__(self, heap_file_path: str):
@@ -204,7 +205,8 @@ class DbEngine:
             binary_data = working_block.get_data(index.slot)
             return DbRecord('', binary_data.decode(STR_ENCODING))
 
-    def _create_heap_file(self, file_path):
+    @staticmethod
+    def _create_heap_file(file_path):
         with open(file_path, 'a+') as _:
             pass
 

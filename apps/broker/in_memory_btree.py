@@ -138,11 +138,7 @@ class BTreeNode:
                     print("Impossibru...")
 
         # we are a parent, we deleted from leaf and tried to restore the tree condition
-        if delete_res.leaf:
-            delete_res.condition_of_tree_valid = self.is_at_least_half_full() and all(
-                c.is_at_least_half_full() for c in self.children)
-        else:
-            delete_res.condition_of_tree_valid = self.is_at_least_half_full()
+        delete_res.condition_of_tree_valid = self.is_at_least_half_full()
         delete_res.leaf = False
         return delete_res
 
