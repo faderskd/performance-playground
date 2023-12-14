@@ -153,26 +153,26 @@ class PersBTreeNode:
         return InsertionResult(save=False, is_new_node=False, updated=self)
 
     def delete(self, key: PersKey) -> DeleteResult:
-        save_node = False
+        save_curr_node = False
 
         # search for key to delete
         for i in range(len(self.keys)):
             if self.keys[i] > key:
                 child_pointer = self.children[i]
                 child = PersBTreeNode.from_binary(self._node_manager.read_node(child_pointer), self._max_keys,
-                                                       self._node_manager)
+                                                  self._node_manager)
                 delete_res = child.delete(key)
                 break
         else:
             i = len(self.keys)
             child_pointer = self.children[i]
             child = PersBTreeNode.from_binary(self._node_manager.read_node(child_pointer), self._max_keys,
-                                                   self._node_manager)
+                                              self._node_manager)
             delete_res = child.delete(key)
 
         # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
         if self._replace_key_if_needed(key, delete_res.new_first):
-            save_node = True
+            save_curr_node = True
 
         # child has not enough keys/children, so try to borrow from siblings
         if delete_res.leaf and not delete_res.condition_of_tree_valid:
@@ -181,8 +181,11 @@ class PersBTreeNode:
                                                        self._max_keys, self._node_manager)
                 if left_child._has_enough_to_lend():
                     # borrow right-most key from left child
-                    child.keys.insert(0, left_child.keys.pop())
+                    borrowed_right_most_key = left_child.keys.pop()
+                    child.keys.insert(0, borrowed_right_most_key)
                     child.values.insert(0, left_child.values.pop())
+                    self.keys[i - 1] = borrowed_right_most_key
+                    save_curr_node = True
                     self._node_manager.save_node(self.children[i - 1], left_child.to_binary())
                     self._node_manager.save_node(self.children[i], child.to_binary())
             elif i + 1 < len(self.children):
@@ -190,10 +193,15 @@ class PersBTreeNode:
                                                             self._max_keys, self._node_manager)
                 if right_child._has_enough_to_lend():
                     # borrow left-most key from right child
-                    child.keys.append(right_child.keys.pop(0))
+                    borrowed_left_most_key = right_child.keys.pop(0)
+                    child.keys.append(borrowed_left_most_key)
                     child.values.append(right_child.values.pop(0))
                     self._node_manager.save_node(self.children[i + 1], right_child.to_binary())
                     self._node_manager.save_node(self.children[i], child.to_binary())
+                    if i > 0:
+                        self.keys[i - 1] = child.keys[0]
+                    self.keys[i] = right_child.keys[0]
+                    save_curr_node = True
             else:
                 # we still have invalid child and have to merge
                 if i > 0:
@@ -206,8 +214,18 @@ class PersBTreeNode:
                     child.values = new_values
                     left_child.keys = []
                     left_child.values = []
+                    # update leaf pointers
+                    assert isinstance(left_child, PersBTreeNodeLeaf)
+                    assert isinstance(child, PersBTreeNodeLeaf)
+                    if left_child.prev:
+                        left_child.prev.next = self.children[i]
+                    child.prev = left_child.prev
+                    self.keys.pop(i - 1)
+                    self.children.pop(i - 1)  # TODO mark node as garbage
+
                     self._node_manager.save_node(self.children[i - 1], left_child.to_binary())
                     self._node_manager.save_node(self.children[i], child.to_binary())
+                    save_curr_node = True
                 elif i + 1 < len(self.children):
                     # merge with right child
                     right_child = PersBTreeNodeLeaf.from_binary(self._node_manager.read_node(self.children[i + 1]),
@@ -218,9 +236,20 @@ class PersBTreeNode:
                     child.values = new_values
                     right_child.keys = []
                     right_child.values = []
+                    # update leaf pointers
+                    assert isinstance(right_child, PersBTreeNodeLeaf)
+                    assert isinstance(child, PersBTreeNodeLeaf)
+                    if right_child.next:
+                        right_child.next.prev = self.children[i]
+                    child.next = right_child.next
+
+                    self.keys.pop(i)
+                    self.children.pop(i + 1)  # TODO mark node as garbage
+
                     self._node_manager.save_node(self.children[i + 1], right_child.to_binary())
                     self._node_manager.save_node(self.children[i], child.to_binary())
-            delete_res.new_first = self._rearrange_keys_and_get_new_first()  # TODO - fix this
+                    save_curr_node = True
+            delete_res.new_first = self._get_new_first()  # TODO - fix this
         # try to borrow from sibling being grandfather
         if not delete_res.leaf and not delete_res.condition_of_tree_valid:
             if i > 0:
@@ -237,7 +266,7 @@ class PersBTreeNode:
                     self.keys[i - 1] = child.keys.pop()
                     self._node_manager.save_node(self.children[i - 1], left_child.to_binary())
                     self._node_manager.save_node(self.children[i], child.to_binary())
-                    save_node = True
+                    save_curr_node = True
             elif i + 1 < len(self.children):
                 right_child = PersBTreeNodeLeaf.from_binary(self._node_manager.read_node(self.children[i + 1]),
                                                             self._max_keys, self._node_manager)
@@ -252,7 +281,7 @@ class PersBTreeNode:
                     self.keys[i] = right_child.keys.pop(0)
                     self._node_manager.save_node(self.children[i + 1], right_child.to_binary())
                     self._node_manager.save_node(self.children[i], child.to_binary())
-                    save_node = True
+                    save_curr_node = True
             else:
                 # we still have the invalid child and have to merge
                 left_child = PersBTreeNode.from_binary(self._node_manager.read_node(self.children[i - 1]),
@@ -265,7 +294,7 @@ class PersBTreeNode:
                     left_child.keys = new_keys
                     self.children.pop(i)
                     self._node_manager.save_node(self.children[i - 1], left_child.to_binary())
-                    save_node = True
+                    save_curr_node = True
                 elif i + 1 < len(self.children):
                     # merge with right child
                     right_child = PersBTreeNodeLeaf.from_binary(self._node_manager.read_node(self.children[i + 1]),
@@ -277,14 +306,14 @@ class PersBTreeNode:
                     right_child.keys = new_keys
                     self.children.pop(i)
                     self._node_manager.save_node(self.children[i + 1], right_child.to_binary())
-                    save_node = True
+                    save_curr_node = True
                 else:
                     print("Impossibru...")
 
         # we are a parent, we deleted from leaf and tried to restore the tree condition
         delete_res.condition_of_tree_valid = self.is_at_least_half_full()
         delete_res.leaf = False
-        delete_res.save = save_node
+        delete_res.save = save_curr_node
         return delete_res
 
     def _replace_key_if_needed(self, old: PersKey, new: PersKey):
@@ -293,26 +322,11 @@ class PersBTreeNode:
                 self.keys[i] = new
                 return True
 
-    def _rearrange_keys_and_get_new_first(self) -> typing.Optional[int]:
-        new_children = []
-        for c in self.children:
-            assert isinstance(c, BTreeNodeLeaf)
-            if not c.keys:
-                if c.prev:
-                    assert isinstance(c.prev, BTreeNodeLeaf)
-                    c.prev.next = c.next
-                if c.next:
-                    assert isinstance(c.next, BTreeNodeLeaf)
-                    c.next.prev = c.prev
-                continue
-            new_children.append(c)
-        self.keys = []
-        self.children = new_children
-        # rearrange our keys
-        for i in range(1, len(self.children)):
-            self.keys.append(self.children[i].keys[0])
+    def _get_new_first(self) -> typing.Optional[PersKey]:
         if self.children:
-            return self.children[0].keys[0]
+            leftmost_child_binary = self._node_manager.read_node(self.children[0])
+            leftmost_child = PersBTreeNodeLeaf.from_binary(leftmost_child_binary)
+            return leftmost_child.keys[0]
         return None
 
     def _has_enough_to_lend(self):
@@ -372,8 +386,8 @@ class PersBTreeNodeLeaf(PersBTreeNode):
                  prev: typing.Optional[NodePointer],
                  node_manager: NodeManager):
         super().__init__(keys, children, values, max_keys, node_manager)
-        self.next: NodePointer = next
-        self.prev: NodePointer = prev
+        self.next: typing.Optional[NodePointer] = next
+        self.prev: typing.Optional[NodePointer] = prev
 
     def to_binary(self) -> bytes:
         binary_data = io.BytesIO()

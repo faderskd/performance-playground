@@ -432,9 +432,28 @@ class TestBTree(unittest.TestCase):
         # then
         self.assertEqual(self._dfs(tree), [])
 
-    def test_should_properly_remove_random_keys(self):
+    def test_should_properly_remove_random_keys_tree_max_keys_odd(self):
         # given
-        tree = BTree(5)
+        tree = BTree(3)
+
+        large_array = [i for i in range(10000)]
+        large_array_as_set = set(large_array)
+        random.shuffle(large_array)
+
+        for k in large_array:
+            tree.insert(k, "val")
+
+        for i, k in enumerate(large_array):
+            # when
+            tree.delete(k)
+
+            # then
+            large_array_as_set.remove(k)
+            self.assertEqual(tree.get_leafs(), sorted(large_array_as_set))
+
+    def test_should_properly_remove_random_keys_tree_max_keys_even(self):
+        # given
+        tree = BTree(3)
 
         large_array = [i for i in range(10000)]
         large_array_as_set = set(large_array)
