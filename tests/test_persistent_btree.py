@@ -74,4 +74,4 @@ class TestBTree(unittest.TestCase):
         tree.delete(25)
 
         # then
-        self.assertEqual(tree.dfs(), [40, 10, 15, 0, 10, 15, 60, 40, 60])
+        self.assertEqual(tree.dfs(), [40, 10, 11, 0, 10, 11, 15, 60, 40, 60])
