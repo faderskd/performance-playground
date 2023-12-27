@@ -320,7 +320,7 @@ class BTree:
             print(f'[{node_keys}]', end='->')
             curr_node = curr_node.prev
 
-    def get_leafs(self):
+    def get_leafs(self) -> typing.List[int]:
         sorted_keys = []
         if not self.root:
             return []

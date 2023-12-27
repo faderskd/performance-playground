@@ -453,7 +453,7 @@ class TestBTree(unittest.TestCase):
 
     def test_should_properly_remove_random_keys_tree_max_keys_even(self):
         # given
-        tree = BTree(3)
+        tree = BTree(6)
 
         large_array = [i for i in range(10000)]
         large_array_as_set = set(large_array)

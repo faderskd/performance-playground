@@ -35,9 +35,8 @@ class NodePointer:
 
 @private
 class NodeManager:
-    def __init__(self, file_handle, max_keys: int):
+    def __init__(self, file_handle):
         self._file = file_handle
-        self._max_keys = max_keys
 
     def _seek_to_end(self):
         return self._file.seek(0, os.SEEK_END)
@@ -151,7 +150,7 @@ class PersBTreeNode:
 
             parent = PersBTreeNode([self.keys[mid]], [left_child_pointer, right_child_pointer], [], self._max_keys,
                                    self._node_manager)
-            return InsertionResult(save_curr=False, is_new_node=True, updated=parent) # mark self as garbage
+            return InsertionResult(save_curr=False, is_new_node=True, updated=parent)  # mark self as garbage
         return InsertionResult(save_curr=save_curr_node, is_new_node=False, updated=self)
 
     def delete(self, key: PersKey) -> DeleteResult:
@@ -227,14 +226,17 @@ class PersBTreeNode:
                     assert isinstance(left_child, PersBTreeNodeLeaf)
                     assert isinstance(child, PersBTreeNodeLeaf)
                     if left_child.prev:
-                        left_child.prev.next = self.children[i]
+                        prev_child = PersBTreeNode.from_binary(self._node_manager.read_node(left_child.prev),
+                                                               self._max_keys, self._node_manager)
+                        assert isinstance(prev_child, PersBTreeNodeLeaf)
+                        prev_child.next = self.children[i]
+                        self._node_manager.save_node(left_child.prev, prev_child.to_binary())
                     child.prev = left_child.prev
-                    self.keys.pop(i - 1)
-                    self.children.pop(i - 1)  # TODO mark node as garbage
 
-                    self._node_manager.save_node(self.children[i - 1], left_child.to_binary())
                     self._node_manager.save_node(self.children[i], child.to_binary())
                     save_curr_node = True
+                    self.keys.pop(i - 1)
+                    self.children.pop(i - 1)  # TODO mark node as garbage
                 elif i + 1 < len(self.children):
                     # merge with right child
                     right_child = PersBTreeNodeLeaf.from_binary(self._node_manager.read_node(self.children[i + 1]),
@@ -249,15 +251,18 @@ class PersBTreeNode:
                     assert isinstance(right_child, PersBTreeNodeLeaf)
                     assert isinstance(child, PersBTreeNodeLeaf)
                     if right_child.next:
-                        right_child.next.prev = self.children[i]
+                        next_child = PersBTreeNodeLeaf.from_binary(self._node_manager.read_node(right_child.next),
+                                                                   self._max_keys, self._node_manager)
+                        assert isinstance(next_child, PersBTreeNodeLeaf)
+                        next_child.prev = self.children[i]
+                        self._node_manager.save_node(right_child.next, next_child.to_binary())
                     child.next = right_child.next
+
+                    self._node_manager.save_node(self.children[i], child.to_binary())
+                    save_curr_node = True
 
                     self.keys.pop(i)
                     self.children.pop(i + 1)  # TODO mark node as garbage
-
-                    self._node_manager.save_node(self.children[i + 1], right_child.to_binary())
-                    self._node_manager.save_node(self.children[i], child.to_binary())
-                    save_curr_node = True
             delete_res.new_first = self._get_new_first()
         # try to borrow from sibling being grandfather
         if not delete_res.leaf and not delete_res.condition_of_tree_valid:
@@ -303,9 +308,9 @@ class PersBTreeNode:
                     new_keys = left_child.keys + [self.keys.pop(i - 1)] + child.keys
                     left_child.children = new_children
                     left_child.keys = new_keys
-                    self.children.pop(i)  # TODO mark node as garbage
                     self._node_manager.save_node(self.children[i - 1], left_child.to_binary())
                     save_curr_node = True
+                    self.children.pop(i)  # TODO mark node as garbage
                 elif i + 1 < len(self.children):
                     # merge with right child
                     right_child = PersBTreeNodeLeaf.from_binary(self._node_manager.read_node(self.children[i + 1]),
@@ -315,9 +320,9 @@ class PersBTreeNode:
                     new_keys = child.keys + [self.keys.pop(i)] + right_child.keys
                     right_child.children = new_children
                     right_child.keys = new_keys
-                    self.children.pop(i)  # TODO mark node as garbage
                     self._node_manager.save_node(self.children[i + 1], right_child.to_binary())
                     save_curr_node = True
+                    self.children.pop(i)  # TODO mark node as garbage
                 else:
                     print("Impossibru...")
 
@@ -326,6 +331,19 @@ class PersBTreeNode:
         delete_res.leaf = False
         delete_res.save = save_curr_node
         return delete_res
+
+    def find(self, key: PersKey) -> DbSlotPointer:
+        for i in range(len(self.keys)):
+            if self.keys[i] > key:
+                child = PersBTreeNode.from_binary(self._node_manager.read_node(self.children[i]), self._max_keys,
+                                                  self._node_manager)
+                return child.find(key)
+        else:
+            i = len(self.keys)
+            child = PersBTreeNode.from_binary(self._node_manager.read_node(self.children[i]), self._max_keys,
+                                              self._node_manager)
+            res = child.find(key)
+        return res
 
     def _replace_key_if_needed(self, old: PersKey, new: PersKey):
         for i in range(len(self.keys)):
@@ -441,9 +459,20 @@ class PersBTreeNodeLeaf(PersBTreeNode):
             right_child.prev = left_child_pointer
             right_child.next = self.next
             if self.prev:
-                self.prev.next = left_child_pointer
+                prev_child_binary = self._node_manager.read_node(self.prev)
+                prev_child = PersBTreeNode.from_binary(prev_child_binary, self._max_keys, self._node_manager)
+                assert isinstance(prev_child, PersBTreeNodeLeaf)
+                prev_child.next = left_child_pointer
+                self._node_manager.save_node(self.prev, prev_child.to_binary())
             if self.next:
-                self.next.prev = right_child_pointer
+                next_child_binary = self._node_manager.read_node(self.next)
+                next_child = PersBTreeNode.from_binary(next_child_binary, self._max_keys, self._node_manager)
+                assert isinstance(next_child, PersBTreeNodeLeaf)
+                next_child.prev = right_child_pointer
+                self._node_manager.save_node(self.next, next_child.to_binary())
+
+            self._node_manager.save_node(left_child_pointer, left_child.to_binary())
+            self._node_manager.save_node(right_child_pointer, right_child.to_binary())
 
             parent = PersBTreeNode([self.keys[mid]], [left_child_pointer, right_child_pointer],
                                    [], self._max_keys, self._node_manager)
@@ -468,6 +497,12 @@ class PersBTreeNodeLeaf(PersBTreeNode):
         # there are still some keys available
         return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=False, leaf=True, save=False)
 
+    def find(self, key: PersKey) -> DbSlotPointer:
+        for i in range(len(self.keys)):
+            if self.keys[i] == key:
+                return self.values[i]
+        raise NoSuchKeyException(f'No key {key} found in a tree')
+
     def is_at_least_half_full(self):
         return len(self.keys) >= self._max_keys // 2
 
@@ -484,7 +519,7 @@ class PersBTree:
     def __init__(self, index_file_path: str, max_keys: int):
         self._max_keys = max_keys
         self.file_handle = self._get_or_create_index_file(index_file_path)
-        self._node_manager = NodeManager(self.file_handle, max_keys)
+        self._node_manager = NodeManager(self.file_handle)
         self.root = self._get_or_create_root()
 
     def insert(self, key: int, value: DbSlotPointer):
@@ -497,13 +532,33 @@ class PersBTree:
         result = self.root.delete(PersKey(key))
         if len(self.root.keys) in [0, 1] and len(self.root.children) == 1:
             first_child = PersBTreeNode.from_binary(self._node_manager.read_node(self.root.children[0]), self._max_keys,
-                                                    self._node_manager) # TODO mark node as garbage
+                                                    self._node_manager)  # TODO mark node as garbage
             self._node_manager.save_node(NodePointer(0), first_child.to_binary())
+            self.root = first_child
         elif not self.root.keys and not self.root.children:
             self.root = PersBTreeNodeLeaf([], [], [], self._max_keys, None, None, self._node_manager)
             self._node_manager.save_node(NodePointer(0), self.root.to_binary())
         elif result.save:
             self._node_manager.save_node(NodePointer(0), self.root.to_binary())
+
+    def find(self, key: int) -> DbSlotPointer:
+        return self.root.find(PersKey(key))
+
+    def get_leafs(self) -> typing.List[PersKey]:
+        sorted_keys = []
+        curr_node = self.root
+        while curr_node.children:
+            curr_node = PersBTreeNode.from_binary(self._node_manager.read_node(curr_node.children[0]), self._max_keys,
+                                                  self._node_manager)
+        assert isinstance(curr_node, PersBTreeNodeLeaf)
+        while curr_node.keys:
+            sorted_keys.extend(curr_node.keys)
+            if curr_node.next:
+                curr_node = PersBTreeNode.from_binary(self._node_manager.read_node(curr_node.next), self._max_keys,
+                                                      self._node_manager)
+            else:
+                break
+        return sorted_keys
 
     def _get_or_create_root(self):
         node_bytes = self._node_manager.read_node(NodePointer(0))
