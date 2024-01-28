@@ -51,7 +51,6 @@ class DeleteResult:
     new_first: typing.Optional[PersKey]
     condition_of_tree_valid: bool = True
     leaf: bool = False
-    save: bool = False
 
 
 class PersBTreeNode:
@@ -142,9 +141,6 @@ class PersBTreeNode:
             child_pointer = self.children[i]
             child = self._page_manager.read_page(child_pointer)
             delete_res = child.delete(key)
-
-        if delete_res.save:
-            self._page_manager.save_page(child)
 
         # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
         if self._replace_key_if_needed(key, delete_res.new_first):
@@ -290,7 +286,8 @@ class PersBTreeNode:
         # we are a parent, we deleted from leaf and tried to restore the tree condition
         delete_res.condition_of_tree_valid = self._is_at_least_half_full()
         delete_res.leaf = False
-        delete_res.save = save_curr_node
+        if save_curr_node:
+            self._page_manager.save_page(self)
         return delete_res
 
     def find(self, key: PersKey) -> DbRecordPointer:
@@ -474,12 +471,13 @@ class PersBTreeNodeLeaf(PersBTreeNode):
 
         if self._is_at_least_half_full():
             # case when after deletion b+tree condition is maintained in leaf, nothing to do more
-            return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=True, leaf=True, save=True)
+            self._page_manager.save_page(self)
+            return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=True, leaf=True)
         # case when there is not enough elements in leaf after deletion
         if not self.keys:
-            return DeleteResult(new_first=None, condition_of_tree_valid=False, leaf=True, save=False)
+            return DeleteResult(new_first=None, condition_of_tree_valid=False, leaf=True)
         # there are still some keys available
-        return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=False, leaf=True, save=False)
+        return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=False, leaf=True)
 
     def find(self, key: PersKey) -> DbRecordPointer:
         for i in range(len(self.keys)):
@@ -523,7 +521,7 @@ class PersBTree:
             lock_ctx.release_and_remove(lock_index)
 
     def delete(self, key: int) -> None:
-        result = self._root.delete(PersKey(key))
+        self._root.delete(PersKey(key))
         if len(self._root.keys) in [0, 1] and len(self._root.children) == 1:
             first_child = self._page_manager.read_page(self._root.children[0])  # TODO mark node as garbage
             self._page_manager.save_page(first_child)
@@ -531,8 +529,6 @@ class PersBTree:
         elif not self._root.keys and not self._root.children:
             self._root = PersBTreeNodeLeaf(PagePointer(0), [], [], [], self._max_keys, None, None, self._page_manager,
                                            self._lock_manager)
-            self._page_manager.save_page(self._root)
-        elif result.save:
             self._page_manager.save_page(self._root)
 
     def find(self, key: int) -> DbRecordPointer:
