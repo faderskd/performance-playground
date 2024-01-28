@@ -3,7 +3,7 @@ import random
 import unittest
 
 from apps.broker.index.persistent_btree import PersBTree, PersBTreeNode, PersBTreeNodeLeaf, PagePointer, PersKey
-from apps.broker.storage_engine import DbSlotPointer
+from apps.broker.storage_engine import DbRecordPointer
 from tests.test_utils import ensure_file_not_exists_in_current_dir
 
 
@@ -18,7 +18,7 @@ class TestBTree(unittest.TestCase):
     def test_should_properly_serialize_leaf_node(self):
         # given
         pointer = PagePointer(0)
-        leaf = PersBTreeNodeLeaf(pointer, [PersKey(1), PersKey(2)], [], [DbSlotPointer(1, 1), DbSlotPointer(2, 2)], 3,
+        leaf = PersBTreeNodeLeaf(pointer, [PersKey(1), PersKey(2)], [], [DbRecordPointer(1, 1), DbRecordPointer(2, 2)], 3,
                                  PagePointer(1), PagePointer(2), None, None)
 
         # when
@@ -27,7 +27,7 @@ class TestBTree(unittest.TestCase):
         # then
         deserialized = PersBTreeNodeLeaf.from_binary(pointer, binary, 3, None, None)
         self.assertEqual(deserialized.keys, [PersKey(1), PersKey(2)])
-        self.assertEqual(deserialized.values, [DbSlotPointer(1, 1), DbSlotPointer(2, 2)])
+        self.assertEqual(deserialized.values, [DbRecordPointer(1, 1), DbRecordPointer(2, 2)])
         self.assertEqual(deserialized.children, [])
         self.assertEqual(deserialized.next, PagePointer(1))
         self.assertEqual(deserialized.prev, PagePointer(2))
@@ -50,7 +50,7 @@ class TestBTree(unittest.TestCase):
     def test_should_build_proper_tree(self):
         # given
         tree = PersBTree(self.file_path, 3)
-        value = DbSlotPointer(0, 0)
+        value = DbRecordPointer(0, 0)
 
         # when
         tree.insert(10, value)
@@ -83,7 +83,7 @@ class TestBTree(unittest.TestCase):
     def test_should_properly_delete_from_tree_leafs_and_merge_with_siblings(self):
         # given
         tree = PersBTree(self.file_path, 3)
-        value = DbSlotPointer(0, 0)
+        value = DbRecordPointer(0, 0)
 
         # when
         tree.insert(10, value)
@@ -112,7 +112,7 @@ class TestBTree(unittest.TestCase):
     def test_should_properly_delete_from_tree_indexes_and_borrow_from_left_siblings(self):
         # given
         tree = PersBTree(self.file_path, 3)
-        value = DbSlotPointer(0, 0)
+        value = DbRecordPointer(0, 0)
 
         # when
         tree.insert(10, value)
@@ -146,7 +146,7 @@ class TestBTree(unittest.TestCase):
     def test_should_properly_delete_from_tree_from_both_sides_including_leafs_and_indexes(self):
         # given
         tree = PersBTree(self.file_path, 3)
-        value = DbSlotPointer(0, 0)
+        value = DbRecordPointer(0, 0)
 
         # when
         tree.insert(1, value)
@@ -287,7 +287,7 @@ class TestBTree(unittest.TestCase):
     def test_should_delete_from_tree_with_when_there_are_not_empty_keys_index_after_deletion(self):
         # given
         tree = PersBTree(self.file_path, 4)
-        value = DbSlotPointer(0, 0)
+        value = DbRecordPointer(0, 0)
 
         for i in range(1, 73):
             tree.insert(i, value)
@@ -458,7 +458,7 @@ class TestBTree(unittest.TestCase):
         random.shuffle(large_array)
 
         for k in large_array:
-            tree.insert(k, DbSlotPointer(0, 0))
+            tree.insert(k, DbRecordPointer(0, 0))
 
         for i, k in enumerate(large_array):
             # when
@@ -477,7 +477,7 @@ class TestBTree(unittest.TestCase):
         random.shuffle(large_array)
 
         for k in large_array:
-            tree.insert(k, DbSlotPointer(0, 0))
+            tree.insert(k, DbRecordPointer(0, 0))
 
         for i, k in enumerate(large_array):
             # when
@@ -495,7 +495,7 @@ class TestBTree(unittest.TestCase):
         random.shuffle(large_array)
 
         for k in large_array:
-            tree.insert(k, DbSlotPointer(k, k))
+            tree.insert(k, DbRecordPointer(k, k))
 
         # when
         for i, k in enumerate(large_array):
@@ -508,4 +508,4 @@ class TestBTree(unittest.TestCase):
 
         # when
         for k in large_array[len(large_array) - 100:]:
-            self.assertEqual(tree.find(k), DbSlotPointer(k, k))
+            self.assertEqual(tree.find(k), DbRecordPointer(k, k))

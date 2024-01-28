@@ -8,12 +8,17 @@ from apps.broker.models import Record
 from apps.broker.utils import public, private, package_private
 
 DB_FILE_HEADER_SIZE_BYTES = 1024
+
 BLOCK_SIZE_BYTES = 1024
 BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES = 2  # max 65536 slots
+HEAP_FILE_BLOCKS_COUNT_BYTES = 3 # max 16777216 of blocks
+
 SLOT_OFFSET_SIZE_BYTES = 2  # max 65536 offsets
 SLOT_LENGTH_SIZE_BYTES = 2  # max 65536 chars
 SLOT_POINTER_SIZE_BYTES = SLOT_OFFSET_SIZE_BYTES + SLOT_LENGTH_SIZE_BYTES
+
 BLOCK_MAX_DATA_SIZE = (BLOCK_SIZE_BYTES - BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES - SLOT_POINTER_SIZE_BYTES)
+
 STR_ENCODING = 'utf8'
 INT_ENCODING = 'big'
 
@@ -60,6 +65,17 @@ class DbRecord:
 class DbRecordPointer:
     block: int
     slot: int
+
+    def to_binary(self) -> bytes:
+        return (int(self.block).to_bytes(HEAP_FILE_BLOCKS_COUNT_BYTES, INT_ENCODING) +
+                int(self.slot).to_bytes(BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES, INT_ENCODING))
+
+    @classmethod
+    def from_binary(cls, data: io.BytesIO):
+        return cls(
+            int.from_bytes(data.read(HEAP_FILE_BLOCKS_COUNT_BYTES), INT_ENCODING),
+            int.from_bytes(data.read(BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES), INT_ENCODING)
+        )
 
 
 @private

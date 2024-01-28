@@ -7,7 +7,7 @@ from enum import Enum
 
 from apps.broker.index.lock_manager import LockManager
 from apps.broker.index.persistent_data import PagePointer, PersKey
-from apps.broker.storage_engine import DbSlotPointer, INT_ENCODING
+from apps.broker.storage_engine import DbRecordPointer, INT_ENCODING
 
 MAX_KEYS_LENGTH_BYTES = 1  # max 255 keys
 MAX_VALUES_LENGTH_BYTES = 1  # max 255 keys
@@ -58,7 +58,7 @@ class PersBTreeNode:
     def __init__(self, pointer: typing.Optional[PagePointer],
                  keys: typing.List[PersKey],
                  children: typing.List[PagePointer],
-                 values: typing.List[DbSlotPointer],
+                 values: typing.List[DbRecordPointer],
                  max_keys: int,
                  page_manager,
                  lock_manager: LockManager):
@@ -70,7 +70,8 @@ class PersBTreeNode:
         self._page_manager = page_manager
         self._lock_manager = lock_manager
 
-    def insert(self, key: PersKey, value: DbSlotPointer, lock_ctx: LockContext) -> 'InsertionResult':
+    def insert(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext) -> 'InsertionResult':
+        print(f"{threading.current_thread().name} -> enter Node {self.pointer.block_number} insert key {key}")
         save_curr_node = False
         curr_node_lock = self._lock_manager.get_lock(self.pointer)
         curr_node_lock.acquire()
@@ -78,30 +79,20 @@ class PersBTreeNode:
         try:
             if self._can_release_parents_locks():
                 lock_ctx.release_and_remove_parent_locks(lock_index)
-                # print(f"{threading.current_thread().name} -> enter Node insert key {key}")
             for i in range(len(self.keys)):
                 if self.keys[i] >= key:
+                    # TODO: needs acquire
                     child_node = self._page_manager.read_page(self.children[i])
                     insertion_result = child_node.insert(key, value, lock_ctx)
                     insert_index = i
-                    save_index = i
                     break
             else:
+                # TODO: needs acquire
                 child_node = self._page_manager.read_page(self.children[-1])
                 insertion_result = child_node.insert(key, value, lock_ctx)
                 insert_index = len(self.children)
-                save_index = len(self.children) - 1
 
-            # if insertion_result.insufficient_lock_permissions:
-            #     # print(f"{threading.current_thread().name} -> exit Node insert key {key}")
-            #
-            #     return InsertionResult(save_curr=False, is_new_node=False, updated=None,
-            #                            insufficient_lock_permissions=True)
-
-            if insertion_result.save_curr:
-                self._page_manager.save_page(self.children[save_index], insertion_result.updated)
-
-            elif insertion_result.is_new_node:
+            if insertion_result.is_new_node:
                 save_curr_node = True
                 first_key = insertion_result.updated.keys[0]
                 self.keys.insert(insert_index, first_key)
@@ -127,10 +118,12 @@ class PersBTreeNode:
 
                 parent = PersBTreeNode(self.pointer, [self.keys[mid]], [left_child.pointer, right_child.pointer],
                                        [], self._max_keys, self._page_manager, self._lock_manager)
-                # print(f"{threading.current_thread().name} -> exit Node insert key {key}")
-                return InsertionResult(save_curr=False, is_new_node=True, updated=parent)  # mark self as garbage
-            # print(f"{threading.current_thread().name} -> exit Node insert key {key}")
-            return InsertionResult(save_curr=save_curr_node, is_new_node=False, updated=self)
+                print(f"{threading.current_thread().name} -> exit Node {self.pointer.block_number} insert key {key}")
+                return InsertionResult(is_new_node=True, updated=parent)  # mark self as garbage
+            if save_curr_node:
+                self._page_manager.save_page(self)
+            print(f"{threading.current_thread().name} -> exit Node {self.pointer.block_number} insert key {key}")
+            return InsertionResult(is_new_node=False, updated=self)
         finally:
             lock_ctx.release_and_remove(lock_index)
 
@@ -151,7 +144,7 @@ class PersBTreeNode:
             delete_res = child.delete(key)
 
         if delete_res.save:
-            self._page_manager.save_page(child_pointer, child)
+            self._page_manager.save_page(child)
 
         # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
         if self._replace_key_if_needed(key, delete_res.new_first):
@@ -169,8 +162,8 @@ class PersBTreeNode:
                     child.keys.insert(0, borrowed_right_most_key)
                     child.values.insert(0, left_child.values.pop())
                     self.keys[i - 1] = borrowed_right_most_key
-                    self._page_manager.save_page(self.children[i - 1], left_child)
-                    self._page_manager.save_page(self.children[i], child)
+                    self._page_manager.save_page(left_child)
+                    self._page_manager.save_page(child)
                     save_curr_node = True
                     borrowed_from_left_child = True
             if not borrowed_from_left_child and i + 1 < len(self.children):
@@ -180,8 +173,8 @@ class PersBTreeNode:
                     borrowed_left_most_key = right_child.keys.pop(0)
                     child.keys.append(borrowed_left_most_key)
                     child.values.append(right_child.values.pop(0))
-                    self._page_manager.save_page(self.children[i + 1], right_child)
-                    self._page_manager.save_page(self.children[i], child)
+                    self._page_manager.save_page(right_child)
+                    self._page_manager.save_page(child)
                     if i > 0:
                         self.keys[i - 1] = child.keys[0]
                     self.keys[i] = right_child.keys[0]
@@ -205,10 +198,10 @@ class PersBTreeNode:
                         prev_child = self._page_manager.read_page(left_child.prev)
                         assert isinstance(prev_child, PersBTreeNodeLeaf)
                         prev_child.next = self.children[i]
-                        self._page_manager.save_page(left_child.prev, prev_child)
+                        self._page_manager.save_page(prev_child)
                     child.prev = left_child.prev
 
-                    self._page_manager.save_page(self.children[i], child)
+                    self._page_manager.save_page(child)
                     save_curr_node = True
                     self.keys.pop(i - 1)
                     self.children.pop(i - 1)  # TODO mark node as garbage
@@ -228,10 +221,10 @@ class PersBTreeNode:
                         next_child = self._page_manager.read_page(right_child.next)
                         assert isinstance(next_child, PersBTreeNodeLeaf)
                         next_child.prev = self.children[i]
-                        self._page_manager.save_page(right_child.next, next_child)
+                        self._page_manager.save_page(next_child)
                     child.next = right_child.next
 
-                    self._page_manager.save_page(self.children[i], child)
+                    self._page_manager.save_page(child)
                     save_curr_node = True
 
                     self.keys.pop(i)
@@ -250,8 +243,8 @@ class PersBTreeNode:
                     else:
                         child.keys.insert(0, self.keys[i - 1])
                     self.keys[i - 1] = left_child.keys.pop()
-                    self._page_manager.save_page(self.children[i - 1], left_child)
-                    self._page_manager.save_page(self.children[i], child)
+                    self._page_manager.save_page(left_child)
+                    self._page_manager.save_page(child)
                     save_curr_node = True
                     borrowed_from_left_child = True
             if not borrowed_from_left_child and i + 1 < len(self.children):
@@ -265,8 +258,8 @@ class PersBTreeNode:
                     else:
                         child.keys.append(self.keys[i])
                     self.keys[i] = right_child.keys.pop(0)
-                    self._page_manager.save_page(self.children[i + 1], right_child)
-                    self._page_manager.save_page(self.children[i], child)
+                    self._page_manager.save_page(right_child)
+                    self._page_manager.save_page(child)
                     save_curr_node = True
                     borrowed_from_right_child = True
             if not borrowed_from_left_child and not borrowed_from_right_child:
@@ -278,7 +271,7 @@ class PersBTreeNode:
                     new_keys = left_child.keys + [self.keys.pop(i - 1)] + child.keys
                     left_child.children = new_children
                     left_child.keys = new_keys
-                    self._page_manager.save_page(self.children[i - 1], left_child)
+                    self._page_manager.save_page(left_child)
                     save_curr_node = True
                     self.children.pop(i)  # TODO mark node as garbage
                 elif i + 1 < len(self.children):
@@ -288,7 +281,7 @@ class PersBTreeNode:
                     new_keys = child.keys + [self.keys.pop(i)] + right_child.keys
                     right_child.children = new_children
                     right_child.keys = new_keys
-                    self._page_manager.save_page(self.children[i + 1], right_child)
+                    self._page_manager.save_page(right_child)
                     save_curr_node = True
                     self.children.pop(i)  # TODO mark node as garbage
                 else:
@@ -300,7 +293,7 @@ class PersBTreeNode:
         delete_res.save = save_curr_node
         return delete_res
 
-    def find(self, key: PersKey) -> DbSlotPointer:
+    def find(self, key: PersKey) -> DbRecordPointer:
         for i in range(len(self.keys)):
             if self.keys[i] > key:
                 child = self._page_manager.read_page(self.children[i])
@@ -368,7 +361,7 @@ class PersBTreeNode:
         len_of_keys = int.from_bytes(buff.read(MAX_KEYS_LENGTH_BYTES), INT_ENCODING)
         keys = [PersKey.from_binary(buff) for _ in range(len_of_keys)]
         len_of_values = int.from_bytes(buff.read(MAX_VALUES_LENGTH_BYTES), INT_ENCODING)
-        values = [DbSlotPointer.from_binary(buff) for _ in range(len_of_values)]
+        values = [DbRecordPointer.from_binary(buff) for _ in range(len_of_values)]
         len_of_children = int.from_bytes(buff.read(MAX_CHILDREN_LENGTH_BYTES), INT_ENCODING)
         children = [PagePointer.from_binary(buff) for _ in range(len_of_children)]
         if len_of_children:
@@ -387,7 +380,7 @@ class PersBTreeNodeLeaf(PersBTreeNode):
     def __init__(self, pointer: typing.Optional[PagePointer],
                  keys: typing.List[PersKey],
                  children: typing.List[PagePointer],
-                 values: typing.List[DbSlotPointer],
+                 values: typing.List[DbRecordPointer],
                  max_keys: int,
                  next: typing.Optional[PagePointer],
                  prev: typing.Optional[PagePointer],
@@ -411,11 +404,8 @@ class PersBTreeNodeLeaf(PersBTreeNode):
         binary_data.seek(0)
         return binary_data.read()
 
-    def insert(self, key: PersKey, value: DbSlotPointer, lock_ctx: LockContext) -> 'InsertionResult':
-        # if lock_type is LockType.READ and ((self.keys and key < self.keys[0]) or len(self.keys) == self._max_keys):
-        #     return InsertionResult(save_curr=False, is_new_node=False, updated=None,
-        #                            insufficient_lock_permissions=True)
-        # print(f"{threading.current_thread().name} -> enter Leaf insert key {key}")
+    def insert(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext) -> 'InsertionResult':
+        print(f"{threading.current_thread().name} -> enter Leaf {self.pointer.block_number}  insert key {key}")
         curr_node_lock = self._lock_manager.get_lock(self.pointer)
         curr_node_lock.acquire()
         lock_index = lock_ctx.push(curr_node_lock)
@@ -444,6 +434,7 @@ class PersBTreeNodeLeaf(PersBTreeNode):
                 left_child = self._page_manager.save_new_page(left_child)
                 right_child= self._page_manager.save_new_page(right_child)
 
+                # TODO: lock when updating pointers
                 left_child.next = right_child.pointer
                 left_child.prev = self.prev
                 right_child.prev = left_child.pointer
@@ -452,22 +443,23 @@ class PersBTreeNodeLeaf(PersBTreeNode):
                     prev_child = self._page_manager.read_page(self.prev)
                     assert isinstance(prev_child, PersBTreeNodeLeaf)
                     prev_child.next = left_child.pointer
-                    self._page_manager.save_page(self.prev, prev_child)
+                    self._page_manager.save_page(prev_child)
                 if self.next:
                     next_child = self._page_manager.read_page(self.next)
                     assert isinstance(next_child, PersBTreeNodeLeaf)
                     next_child.prev = right_child.pointer
-                    self._page_manager.save_page(self.next, next_child)
+                    self._page_manager.save_page(next_child)
 
-                self._page_manager.save_page(left_child.pointer, left_child)
-                self._page_manager.save_page(right_child.pointer, right_child)
+                self._page_manager.save_page(left_child)
+                self._page_manager.save_page(right_child)
 
                 parent = PersBTreeNode(self.pointer, [self.keys[mid]], [left_child.pointer, right_child.pointer],
                                        [], self._max_keys, self._page_manager, self._lock_manager)
-                # print(f"{threading.current_thread().name} -> exit Leaf insert key {key}")
-                return InsertionResult(save_curr=False, is_new_node=True, updated=parent)
-            # print(f"{threading.current_thread().name} -> exit Leaf insert key {key}")
-            return InsertionResult(save_curr=True, is_new_node=False, updated=self)
+                print(f"{threading.current_thread().name} -> exit Leaf {self.pointer.block_number} insert key {key}")
+                return InsertionResult(is_new_node=True, updated=parent)
+            print(f"{threading.current_thread().name} -> exit Leaf {self.pointer.block_number} insert key {key}")
+            self._page_manager.save_page(self)
+            return InsertionResult(is_new_node=False, updated=self)
         finally:
             lock_ctx.release_and_remove(lock_index)
 
@@ -489,7 +481,7 @@ class PersBTreeNodeLeaf(PersBTreeNode):
         # there are still some keys available
         return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=False, leaf=True, save=False)
 
-    def find(self, key: PersKey) -> DbSlotPointer:
+    def find(self, key: PersKey) -> DbRecordPointer:
         for i in range(len(self.keys)):
             if self.keys[i] == key:
                 return self.values[i]
@@ -501,7 +493,6 @@ class PersBTreeNodeLeaf(PersBTreeNode):
 
 @dataclass
 class InsertionResult:
-    save_curr: bool
     is_new_node: bool
     updated: typing.Optional[PersBTreeNode]
     insufficient_lock_permissions: bool = False
@@ -519,15 +510,15 @@ class PersBTree:
         self._root = self._get_or_create_root()
         self._global_lock = threading.Lock()
 
-    def insert(self, key: int, value: DbSlotPointer):
+    def insert(self, key: int, value: DbRecordPointer):
         self._global_lock.acquire()
         lock_ctx = LockContext()
         lock_index = lock_ctx.push(self._global_lock)
         try:
             result = self._root.insert(PersKey(key), value, lock_ctx)
-            if result.is_new_node or result.save_curr:
+            if result.is_new_node:
                 self._root = result.updated
-                self._page_manager.save_page(PagePointer(0), result.updated)
+                self._page_manager.save_page(result.updated)
         finally:
             lock_ctx.release_and_remove(lock_index)
 
@@ -535,16 +526,16 @@ class PersBTree:
         result = self._root.delete(PersKey(key))
         if len(self._root.keys) in [0, 1] and len(self._root.children) == 1:
             first_child = self._page_manager.read_page(self._root.children[0])  # TODO mark node as garbage
-            self._page_manager.save_page(PagePointer(0), first_child)
+            self._page_manager.save_page(first_child)
             self._root = first_child
         elif not self._root.keys and not self._root.children:
             self._root = PersBTreeNodeLeaf(PagePointer(0), [], [], [], self._max_keys, None, None, self._page_manager,
                                            self._lock_manager)
-            self._page_manager.save_page(PagePointer(0), self._root)
+            self._page_manager.save_page(self._root)
         elif result.save:
-            self._page_manager.save_page(PagePointer(0), self._root)
+            self._page_manager.save_page(self._root)
 
-    def find(self, key: int) -> DbSlotPointer:
+    def find(self, key: int) -> DbRecordPointer:
         return self._root.find(PersKey(key))
 
     def get_leafs(self) -> typing.List[PersKey]:
@@ -564,11 +555,8 @@ class PersBTree:
     def _get_or_create_root(self):
         root = self._page_manager.read_page_or_get_empty(PagePointer(0))
         if root.is_empty():
-            self._page_manager.save_page(PagePointer(0), root)
+            root = self._page_manager.save_new_page(root)
         return root
-
-    def _save_node(self, pointer: PagePointer, node: PersBTreeNode):
-        self._page_manager.save_page(pointer, node)
 
     def dfs(self) -> typing.List[int]:
         dfs_container = []
