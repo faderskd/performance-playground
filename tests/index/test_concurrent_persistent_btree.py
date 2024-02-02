@@ -19,12 +19,12 @@ class TestBTree(unittest.TestCase):
     def test_should_insert_concurrently(self):
         # given
         tree = PersBTree(self.file_path, 5)
-        thread_count = 1
+        thread_count = 10
         executor = ThreadPoolExecutor(max_workers=thread_count, thread_name_prefix="test-concurrent-insert")
-        arr_len = 24
+        arr_len = 10000
         large_array = [i for i in range(arr_len)]
         count_per_thread = arr_len // thread_count
-        # random.shuffle(large_array)
+        random.shuffle(large_array)
 
         max_pointer_block = max_pointer_slot = 2^16 # two bytes
         def threaded_insert(chunk):

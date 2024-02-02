@@ -22,28 +22,36 @@ class LockType(Enum):
 class LockState:
     def __init__(self, lock: threading.Lock, acquired: bool):
         self.lock = lock
+        self.acquired = acquired
+
+    def is_acquired(self):
+        return self.acquired and self.lock.locked()
 
     def release(self):
+        self.acquired = False
         self.lock.release()
 
 
 class LockContext:
     def __init__(self):
-        self.parent_locks: typing.List[threading.Lock] = []
+        self.lock_stack: typing.List[LockState] = []
 
     def push(self, lock: threading.Lock) -> int:
-        self.parent_locks.append(lock)
-        return len(self.parent_locks) - 1
+        self.lock_stack.append(LockState(lock, lock.locked()))
+        return len(self.lock_stack) - 1
 
-    def release_and_remove(self, index: int):
-        if len(self.parent_locks) > index:
-            self.parent_locks[index].release()
-            self.parent_locks.pop(index)
+    def release_self_and_child_locks(self, index: int):
+        for i in range(len(self.lock_stack) - 1, index - 1, -1):
+            if self.lock_stack[i].is_acquired():
+                self.lock_stack[i].release()
 
-    def release_and_remove_parent_locks(self, index: int):
+    def release_parent_locks(self, index: int):
         for p in range(index):
-            self.parent_locks[p].release()
-        self.parent_locks = self.parent_locks[index:]
+            if self.lock_stack[p].is_acquired():
+                self.lock_stack[p].release()
+
+    def get_latest_index(self):
+        return len(self.lock_stack) - 1
 
 
 @dataclass
@@ -70,23 +78,25 @@ class PersBTreeNode:
         self._lock_manager = lock_manager
 
     def insert(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext) -> 'InsertionResult':
-        print(f"{threading.current_thread().name} -> enter Node {self.pointer.block_number} insert key {key}")
+        # print(f"{threading.current_thread().name} -> enter Node {self.pointer.block_number} insert key {key}")
         save_curr_node = False
-        curr_node_lock = self._lock_manager.get_lock(self.pointer)
-        curr_node_lock.acquire()
-        lock_index = lock_ctx.push(curr_node_lock)
+        lock_index = lock_ctx.get_latest_index()
         try:
             if self._can_release_parents_locks():
-                lock_ctx.release_and_remove_parent_locks(lock_index)
+                lock_ctx.release_parent_locks(lock_index)
             for i in range(len(self.keys)):
                 if self.keys[i] >= key:
-                    # TODO: needs acquire
+                    child_lock = self._lock_manager.get_lock(self.children[i])
+                    child_lock.acquire()
+                    lock_ctx.push(child_lock)
                     child_node = self._page_manager.read_page(self.children[i])
                     insertion_result = child_node.insert(key, value, lock_ctx)
                     insert_index = i
                     break
             else:
-                # TODO: needs acquire
+                child_lock = self._lock_manager.get_lock(self.children[-1])
+                child_lock.acquire()
+                lock_ctx.push(child_lock)
                 child_node = self._page_manager.read_page(self.children[-1])
                 insertion_result = child_node.insert(key, value, lock_ctx)
                 insert_index = len(self.children)
@@ -117,14 +127,14 @@ class PersBTreeNode:
 
                 parent = PersBTreeNode(self.pointer, [self.keys[mid]], [left_child.pointer, right_child.pointer],
                                        [], self._max_keys, self._page_manager, self._lock_manager)
-                print(f"{threading.current_thread().name} -> exit Node {self.pointer.block_number} insert key {key}")
+                # print(f"{threading.current_thread().name} -> exit Node {self.pointer.block_number} insert key {key} -- division")
                 return InsertionResult(is_new_node=True, updated=parent)  # mark self as garbage
             if save_curr_node:
                 self._page_manager.save_page(self)
-            print(f"{threading.current_thread().name} -> exit Node {self.pointer.block_number} insert key {key}")
+            # print(f"{threading.current_thread().name} -> exit Node {self.pointer.block_number} insert key {key} -- saved")
             return InsertionResult(is_new_node=False, updated=self)
         finally:
-            lock_ctx.release_and_remove(lock_index)
+            lock_ctx.release_self_and_child_locks(lock_index)
 
     def delete(self, key: PersKey) -> DeleteResult:
         save_curr_node = False
@@ -402,13 +412,11 @@ class PersBTreeNodeLeaf(PersBTreeNode):
         return binary_data.read()
 
     def insert(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext) -> 'InsertionResult':
-        print(f"{threading.current_thread().name} -> enter Leaf {self.pointer.block_number}  insert key {key}")
-        curr_node_lock = self._lock_manager.get_lock(self.pointer)
-        curr_node_lock.acquire()
-        lock_index = lock_ctx.push(curr_node_lock)
+        # print(f"{threading.current_thread().name} -> enter Leaf {self.pointer.block_number}  insert key {key}")
+        lock_index = lock_ctx.get_latest_index()
         try:
             if self._can_release_parents_locks():
-                lock_ctx.release_and_remove_parent_locks(lock_index)
+                lock_ctx.release_parent_locks(lock_index)
             for i in range(len(self.keys)):
                 if self.keys[i] == key:
                     raise DuplicateKeyException(f"Duplicate key {key}")
@@ -429,36 +437,36 @@ class PersBTreeNodeLeaf(PersBTreeNode):
                 right_child = PersBTreeNodeLeaf(None, right_keys, [], right_values, self._max_keys, None, None,
                                                 self._page_manager, self._lock_manager)
                 left_child = self._page_manager.save_new_page(left_child)
-                right_child= self._page_manager.save_new_page(right_child)
+                right_child = self._page_manager.save_new_page(right_child)
 
-                # TODO: lock when updating pointers
-                left_child.next = right_child.pointer
-                left_child.prev = self.prev
-                right_child.prev = left_child.pointer
-                right_child.next = self.next
-                if self.prev:
-                    prev_child = self._page_manager.read_page(self.prev)
-                    assert isinstance(prev_child, PersBTreeNodeLeaf)
-                    prev_child.next = left_child.pointer
-                    self._page_manager.save_page(prev_child)
-                if self.next:
-                    next_child = self._page_manager.read_page(self.next)
-                    assert isinstance(next_child, PersBTreeNodeLeaf)
-                    next_child.prev = right_child.pointer
-                    self._page_manager.save_page(next_child)
-
-                self._page_manager.save_page(left_child)
-                self._page_manager.save_page(right_child)
+                # # TODO: lock when updating pointers
+                # left_child.next = right_child.pointer
+                # left_child.prev = self.prev
+                # right_child.prev = left_child.pointer
+                # right_child.next = self.next
+                # if self.prev:
+                #     prev_child = self._page_manager.read_page(self.prev)
+                #     assert isinstance(prev_child, PersBTreeNodeLeaf)
+                #     prev_child.next = left_child.pointer
+                #     self._page_manager.save_page(prev_child)
+                # if self.next:
+                #     next_child = self._page_manager.read_page(self.next)
+                #     assert isinstance(next_child, PersBTreeNodeLeaf)
+                #     next_child.prev = right_child.pointer
+                #     self._page_manager.save_page(next_child)
+                #
+                # self._page_manager.save_page(left_child)
+                # self._page_manager.save_page(right_child)
 
                 parent = PersBTreeNode(self.pointer, [self.keys[mid]], [left_child.pointer, right_child.pointer],
                                        [], self._max_keys, self._page_manager, self._lock_manager)
-                print(f"{threading.current_thread().name} -> exit Leaf {self.pointer.block_number} insert key {key}")
+                # print(f"{threading.current_thread().name} -> exit Leaf {self.pointer.block_number} insert key {key} -- division")
                 return InsertionResult(is_new_node=True, updated=parent)
-            print(f"{threading.current_thread().name} -> exit Leaf {self.pointer.block_number} insert key {key}")
             self._page_manager.save_page(self)
+            # print(f"{threading.current_thread().name} -> exit Leaf {self.pointer.block_number} insert key {key} -- save")
             return InsertionResult(is_new_node=False, updated=self)
         finally:
-            lock_ctx.release_and_remove(lock_index)
+            lock_ctx.release_self_and_child_locks(lock_index)
 
     def delete(self, key: PersKey) -> DeleteResult:
         for i in range(len(self.keys)):
@@ -506,19 +514,19 @@ class PersBTree:
         self._page_manager = PageManager(self._file_handle, max_keys)
         self._lock_manager = LockManager()
         self._root = self._get_or_create_root()
-        self._global_lock = threading.Lock()
 
     def insert(self, key: int, value: DbRecordPointer):
-        self._global_lock.acquire()
         lock_ctx = LockContext()
-        lock_index = lock_ctx.push(self._global_lock)
+        root_lock = self._lock_manager.get_lock(PagePointer(0))
+        root_lock.acquire()
+        lock_index = lock_ctx.push(root_lock)
         try:
             result = self._root.insert(PersKey(key), value, lock_ctx)
             if result.is_new_node:
                 self._root = result.updated
                 self._page_manager.save_page(result.updated)
         finally:
-            lock_ctx.release_and_remove(lock_index)
+            lock_ctx.release_self_and_child_locks(lock_index)
 
     def delete(self, key: int) -> None:
         self._root.delete(PersKey(key))
