@@ -44,7 +44,7 @@ class TestBTree(unittest.TestCase):
         #     tree.delete(k)
 
         # then
-        # self.assertEqual(sorted(large_array), [t.key for t in tree.get_leafs()])
+        self.assertEqual(sorted(large_array), [t.key for t in tree.get_leafs()])
 
         # and
         for k in large_array:

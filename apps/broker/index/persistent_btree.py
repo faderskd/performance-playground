@@ -20,12 +20,16 @@ class LockType(Enum):
 
 
 class LockState:
-    def __init__(self, lock: threading.Lock, acquired: bool):
+    def __init__(self, lock: threading.Lock, acquired: bool, permanent: bool):
         self.lock = lock
         self.acquired = acquired
+        self.permanent = permanent
 
     def is_acquired(self):
         return self.acquired and self.lock.locked()
+
+    def is_permanent(self):
+        return self.permanent
 
     def release(self):
         self.acquired = False
@@ -36,8 +40,8 @@ class LockContext:
     def __init__(self):
         self.lock_stack: typing.List[LockState] = []
 
-    def push(self, lock: threading.Lock) -> int:
-        self.lock_stack.append(LockState(lock, lock.locked()))
+    def push(self, lock: threading.Lock, permanent: bool = False) -> int:
+        self.lock_stack.append(LockState(lock, lock.locked(), permanent))
         return len(self.lock_stack) - 1
 
     def release_self_and_child_locks(self, index: int):
@@ -45,8 +49,10 @@ class LockContext:
             if self.lock_stack[i].is_acquired():
                 self.lock_stack[i].release()
 
-    def release_parent_locks(self, index: int):
+    def release_allowed_parent_locks(self, index: int):
         for p in range(index):
+            if self.lock_stack[p].is_permanent():
+                break
             if self.lock_stack[p].is_acquired():
                 self.lock_stack[p].release()
 
@@ -78,25 +84,20 @@ class PersBTreeNode:
         self._lock_manager = lock_manager
 
     def insert(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext) -> 'InsertionResult':
-        # print(f"{threading.current_thread().name} -> enter Node {self.pointer.block_number} insert key {key}")
         save_curr_node = False
         lock_index = lock_ctx.get_latest_index()
         try:
-            if self._can_release_parents_locks():
-                lock_ctx.release_parent_locks(lock_index)
+            if self._can_release_parents_locks_on_insert():
+                lock_ctx.release_allowed_parent_locks(lock_index)
             for i in range(len(self.keys)):
                 if self.keys[i] >= key:
-                    child_lock = self._lock_manager.get_lock(self.children[i])
-                    child_lock.acquire()
-                    lock_ctx.push(child_lock)
+                    self._lock_child(lock_ctx, self.children[i])
                     child_node = self._page_manager.read_page(self.children[i])
                     insertion_result = child_node.insert(key, value, lock_ctx)
                     insert_index = i
                     break
             else:
-                child_lock = self._lock_manager.get_lock(self.children[-1])
-                child_lock.acquire()
-                lock_ctx.push(child_lock)
+                self._lock_child(lock_ctx, self.children[-1])
                 child_node = self._page_manager.read_page(self.children[-1])
                 insertion_result = child_node.insert(key, value, lock_ctx)
                 insert_index = len(self.children)
@@ -127,178 +128,200 @@ class PersBTreeNode:
 
                 parent = PersBTreeNode(self.pointer, [self.keys[mid]], [left_child.pointer, right_child.pointer],
                                        [], self._max_keys, self._page_manager, self._lock_manager)
-                # print(f"{threading.current_thread().name} -> exit Node {self.pointer.block_number} insert key {key} -- division")
                 return InsertionResult(is_new_node=True, updated=parent)  # mark self as garbage
             if save_curr_node:
                 self._page_manager.save_page(self)
-            # print(f"{threading.current_thread().name} -> exit Node {self.pointer.block_number} insert key {key} -- saved")
             return InsertionResult(is_new_node=False, updated=self)
         finally:
             lock_ctx.release_self_and_child_locks(lock_index)
 
-    def delete(self, key: PersKey) -> DeleteResult:
+    def delete(self, key: PersKey, lock_ctx: LockContext) -> DeleteResult:
         save_curr_node = False
+        lock_index = lock_ctx.get_latest_index()
 
-        # search for key to delete
-        for i in range(len(self.keys)):
-            if self.keys[i] > key:
+        try:
+            if self._can_release_parents_locks_on_delete():
+                lock_ctx.release_allowed_parent_locks(lock_index)
+
+            # search for key to delete
+            for i in range(len(self.keys)):
+                if self.keys[i] > key:
+                    child_pointer = self.children[i]
+                    self._lock_child(lock_ctx, child_pointer, permanent=key in self.keys)
+                    child = self._page_manager.read_page(child_pointer)
+                    delete_res = child.delete(key, lock_ctx)
+                    break
+            else:
+                i = len(self.keys)
                 child_pointer = self.children[i]
+                self._lock_child(lock_ctx, child_pointer, permanent=key in self.keys)
                 child = self._page_manager.read_page(child_pointer)
-                delete_res = child.delete(key)
-                break
-        else:
-            i = len(self.keys)
-            child_pointer = self.children[i]
-            child = self._page_manager.read_page(child_pointer)
-            delete_res = child.delete(key)
+                delete_res = child.delete(key, lock_ctx)
 
-        # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
-        if self._replace_key_if_needed(key, delete_res.new_first):
-            save_curr_node = True
+            # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
+            if self._replace_key_if_needed(key, delete_res.new_first):
+                save_curr_node = True
 
-        # child has not enough keys/children, so try to borrow from siblings
-        borrowed_from_left_child = False
-        borrowed_from_right_child = False
-        if delete_res.leaf and not delete_res.condition_of_tree_valid:
-            if i > 0:
-                left_child = self._page_manager.read_page(self.children[i - 1])
-                if left_child._has_enough_to_lend():
-                    # borrow right-most key from left child
-                    borrowed_right_most_key = left_child.keys.pop()
-                    child.keys.insert(0, borrowed_right_most_key)
-                    child.values.insert(0, left_child.values.pop())
-                    self.keys[i - 1] = borrowed_right_most_key
-                    self._page_manager.save_page(left_child)
-                    self._page_manager.save_page(child)
-                    save_curr_node = True
-                    borrowed_from_left_child = True
-            if not borrowed_from_left_child and i + 1 < len(self.children):
-                right_child = self._page_manager.read_page(self.children[i + 1])
-                if right_child._has_enough_to_lend():
-                    # borrow left-most key from right child
-                    borrowed_left_most_key = right_child.keys.pop(0)
-                    child.keys.append(borrowed_left_most_key)
-                    child.values.append(right_child.values.pop(0))
-                    self._page_manager.save_page(right_child)
-                    self._page_manager.save_page(child)
+            # child has not enough keys/children, so try to borrow from siblings
+            borrowed_from_left_child = False
+            borrowed_from_right_child = False
+            if delete_res.leaf and not delete_res.condition_of_tree_valid:
+                # take locks upfront, do not try to optimize and take all that may be needed
+                left_child = None
+                right_child = None
+                if i > 0:
+                    self._lock_child(lock_ctx, self.children[i - 1])
+                    left_child = self._page_manager.read_page(self.children[i - 1])
+                if i + 1 < len(self.children):
+                    self._lock_child(lock_ctx, self.children[i + 1])
+                    right_child = self._page_manager.read_page(self.children[i + 1])
+
+                if i > 0:
+                    if left_child.has_enough_to_lend():
+                        # borrow right-most key from left child
+                        borrowed_right_most_key = left_child.keys.pop()
+                        child.keys.insert(0, borrowed_right_most_key)
+                        child.values.insert(0, left_child.values.pop())
+                        self.keys[i - 1] = borrowed_right_most_key
+                        self._page_manager.save_page(left_child)
+                        self._page_manager.save_page(child)
+                        save_curr_node = True
+                        borrowed_from_left_child = True
+                if not borrowed_from_left_child and i + 1 < len(self.children):
+                    if right_child.has_enough_to_lend():
+                        # borrow left-most key from right child
+                        borrowed_left_most_key = right_child.keys.pop(0)
+                        child.keys.append(borrowed_left_most_key)
+                        child.values.append(right_child.values.pop(0))
+                        self._page_manager.save_page(right_child)
+                        self._page_manager.save_page(child)
+                        if i > 0:
+                            self.keys[i - 1] = child.keys[0]
+                        self.keys[i] = right_child.keys[0]
+                        save_curr_node = True
+                        borrowed_from_right_child = True
+                if not borrowed_from_left_child and not borrowed_from_right_child:
+                    # we still have invalid child and have to merge
                     if i > 0:
-                        self.keys[i - 1] = child.keys[0]
-                    self.keys[i] = right_child.keys[0]
-                    save_curr_node = True
-                    borrowed_from_right_child = True
-            if not borrowed_from_left_child and not borrowed_from_right_child:
-                # we still have invalid child and have to merge
+                        # merge with left child
+                        new_keys = left_child.keys + child.keys
+                        new_values = left_child.values + child.values
+                        child.keys = new_keys
+                        child.values = new_values
+                        left_child.keys = []
+                        left_child.values = []
+                        # update leaf pointers
+                        assert isinstance(left_child, PersBTreeNodeLeaf)
+                        assert isinstance(child, PersBTreeNodeLeaf)
+                        if left_child.prev:
+                            self._lock_child(lock_ctx, left_child.prev)
+                            prev_child = self._page_manager.read_page(left_child.prev)
+                            assert isinstance(prev_child, PersBTreeNodeLeaf)
+                            prev_child.next = self.children[i]
+                            self._page_manager.save_page(prev_child)
+                        child.prev = left_child.prev
+
+                        self._page_manager.save_page(child)
+                        save_curr_node = True
+                        self.keys.pop(i - 1)
+                        self.children.pop(i - 1)  # TODO mark node as garbage
+                    elif i + 1 < len(self.children):
+                        # merge with right child
+                        new_keys = child.keys + right_child.keys
+                        new_values = child.values + right_child.values
+                        child.keys = new_keys
+                        child.values = new_values
+                        right_child.keys = []
+                        right_child.values = []
+                        # update leaf pointers
+                        assert isinstance(right_child, PersBTreeNodeLeaf)
+                        assert isinstance(child, PersBTreeNodeLeaf)
+                        if right_child.next:
+                            self._lock_child(lock_ctx, right_child.next)
+                            next_child = self._page_manager.read_page(right_child.next)
+                            assert isinstance(next_child, PersBTreeNodeLeaf)
+                            next_child.prev = self.children[i]
+                            self._page_manager.save_page(next_child)
+                        child.next = right_child.next
+
+                        self._page_manager.save_page(child)
+                        save_curr_node = True
+
+                        self.keys.pop(i)
+                        self.children.pop(i + 1)  # TODO mark node as garbage
+                delete_res.new_first = self._get_new_first()
+            # try to borrow from sibling being grandfather
+            if not delete_res.leaf and not delete_res.condition_of_tree_valid:
+                # take locks upfront, do not try to optimize and take all that may be needed
+                left_child = None
+                right_child = None
                 if i > 0:
+                    self._lock_child(lock_ctx, self.children[i - 1])
                     left_child = self._page_manager.read_page(self.children[i - 1])
-                    # merge with left child
-                    new_keys = left_child.keys + child.keys
-                    new_values = left_child.values + child.values
-                    child.keys = new_keys
-                    child.values = new_values
-                    left_child.keys = []
-                    left_child.values = []
-                    # update leaf pointers
-                    assert isinstance(left_child, PersBTreeNodeLeaf)
-                    assert isinstance(child, PersBTreeNodeLeaf)
-                    if left_child.prev:
-                        prev_child = self._page_manager.read_page(left_child.prev)
-                        assert isinstance(prev_child, PersBTreeNodeLeaf)
-                        prev_child.next = self.children[i]
-                        self._page_manager.save_page(prev_child)
-                    child.prev = left_child.prev
-
-                    self._page_manager.save_page(child)
-                    save_curr_node = True
-                    self.keys.pop(i - 1)
-                    self.children.pop(i - 1)  # TODO mark node as garbage
-                elif i + 1 < len(self.children):
-                    # merge with right child
+                if i + 1 < len(self.children):
+                    self._lock_child(lock_ctx, self.children[i + 1])
                     right_child = self._page_manager.read_page(self.children[i + 1])
-                    new_keys = child.keys + right_child.keys
-                    new_values = child.values + right_child.values
-                    child.keys = new_keys
-                    child.values = new_values
-                    right_child.keys = []
-                    right_child.values = []
-                    # update leaf pointers
-                    assert isinstance(right_child, PersBTreeNodeLeaf)
-                    assert isinstance(child, PersBTreeNodeLeaf)
-                    if right_child.next:
-                        next_child = self._page_manager.read_page(right_child.next)
-                        assert isinstance(next_child, PersBTreeNodeLeaf)
-                        next_child.prev = self.children[i]
-                        self._page_manager.save_page(next_child)
-                    child.next = right_child.next
 
-                    self._page_manager.save_page(child)
-                    save_curr_node = True
-
-                    self.keys.pop(i)
-                    self.children.pop(i + 1)  # TODO mark node as garbage
-            delete_res.new_first = self._get_new_first()
-        # try to borrow from sibling being grandfather
-        if not delete_res.leaf and not delete_res.condition_of_tree_valid:
-            if i > 0:
-                left_child = self._page_manager.read_page(self.children[i - 1])
-                if left_child._has_enough_to_lend():
-                    # borrow right-most child from left child
-                    child.children.insert(0, left_child.children.pop())
-                    # it may happen that we need to only override the key or that we need to add a new one
-                    if child._has_enough_keys():
-                        child.keys[0] = self.keys[i - 1]
-                    else:
-                        child.keys.insert(0, self.keys[i - 1])
-                    self.keys[i - 1] = left_child.keys.pop()
-                    self._page_manager.save_page(left_child)
-                    self._page_manager.save_page(child)
-                    save_curr_node = True
-                    borrowed_from_left_child = True
-            if not borrowed_from_left_child and i + 1 < len(self.children):
-                right_child = self._page_manager.read_page(self.children[i + 1])
-                if right_child._has_enough_to_lend():
-                    # borrow left-most key from right child
-                    child.children.append(right_child.children.pop(0))
-                    # it may happen that we need to only override the key or that we need to add a new one
-                    if child._has_enough_keys():
-                        child.keys[-1] = self.keys[i]
-                    else:
-                        child.keys.append(self.keys[i])
-                    self.keys[i] = right_child.keys.pop(0)
-                    self._page_manager.save_page(right_child)
-                    self._page_manager.save_page(child)
-                    save_curr_node = True
-                    borrowed_from_right_child = True
-            if not borrowed_from_left_child and not borrowed_from_right_child:
-                # we still have the invalid child and have to merge
                 if i > 0:
-                    left_child = self._page_manager.read_page(self.children[i - 1])
-                    # merge with left child
-                    new_children = left_child.children + child.children
-                    new_keys = left_child.keys + [self.keys.pop(i - 1)] + child.keys
-                    left_child.children = new_children
-                    left_child.keys = new_keys
-                    self._page_manager.save_page(left_child)
-                    save_curr_node = True
-                    self.children.pop(i)  # TODO mark node as garbage
-                elif i + 1 < len(self.children):
-                    # merge with right child
-                    right_child = self._page_manager.read_page(self.children[i + 1])
-                    new_children = child.children + right_child.children
-                    new_keys = child.keys + [self.keys.pop(i)] + right_child.keys
-                    right_child.children = new_children
-                    right_child.keys = new_keys
-                    self._page_manager.save_page(right_child)
-                    save_curr_node = True
-                    self.children.pop(i)  # TODO mark node as garbage
-                else:
-                    print("Impossibru...")
+                    if left_child.has_enough_to_lend():
+                        # borrow right-most child from left child
+                        child.children.insert(0, left_child.children.pop())
+                        # it may happen that we need to only override the key or that we need to add a new one
+                        if child._has_enough_keys():
+                            child.keys[0] = self.keys[i - 1]
+                        else:
+                            child.keys.insert(0, self.keys[i - 1])
+                        self.keys[i - 1] = left_child.keys.pop()
+                        self._page_manager.save_page(left_child)
+                        self._page_manager.save_page(child)
+                        save_curr_node = True
+                        borrowed_from_left_child = True
+                if not borrowed_from_left_child and i + 1 < len(self.children):
+                    if right_child.has_enough_to_lend():
+                        # borrow left-most key from right child
+                        child.children.append(right_child.children.pop(0))
+                        # it may happen that we need to only override the key or that we need to add a new one
+                        if child._has_enough_keys():
+                            child.keys[-1] = self.keys[i]
+                        else:
+                            child.keys.append(self.keys[i])
+                        self.keys[i] = right_child.keys.pop(0)
+                        self._page_manager.save_page(right_child)
+                        self._page_manager.save_page(child)
+                        save_curr_node = True
+                        borrowed_from_right_child = True
+                if not borrowed_from_left_child and not borrowed_from_right_child:
+                    # we still have the invalid child and have to merge
+                    if i > 0:
+                        # merge with left child
+                        new_children = left_child.children + child.children
+                        new_keys = left_child.keys + [self.keys.pop(i - 1)] + child.keys
+                        left_child.children = new_children
+                        left_child.keys = new_keys
+                        self._page_manager.save_page(left_child)
+                        save_curr_node = True
+                        self.children.pop(i)  # TODO mark node as garbage
+                    elif i + 1 < len(self.children):
+                        # merge with right child
+                        new_children = child.children + right_child.children
+                        new_keys = child.keys + [self.keys.pop(i)] + right_child.keys
+                        right_child.children = new_children
+                        right_child.keys = new_keys
+                        self._page_manager.save_page(right_child)
+                        save_curr_node = True
+                        self.children.pop(i)  # TODO mark node as garbage
+                    else:
+                        print("Impossibru...")
 
-        # we are a parent, we deleted from leaf and tried to restore the tree condition
-        delete_res.condition_of_tree_valid = self._is_at_least_half_full()
-        delete_res.leaf = False
-        if save_curr_node:
-            self._page_manager.save_page(self)
-        return delete_res
+            # we are a parent, we deleted from leaf and tried to restore the tree condition
+            delete_res.condition_of_tree_valid = self._is_at_least_half_full()
+            delete_res.leaf = False
+            if save_curr_node:
+                self._page_manager.save_page(self)
+            return delete_res
+        finally:
+            lock_ctx.release_self_and_child_locks(lock_index)
+
 
     def find(self, key: PersKey) -> DbRecordPointer:
         for i in range(len(self.keys)):
@@ -323,7 +346,7 @@ class PersBTreeNode:
             return leftmost_child.keys[0]
         return None
 
-    def _has_enough_to_lend(self):
+    def has_enough_to_lend(self):
         return len(self.keys) > self._max_keys // 2
 
     def _has_enough_keys(self):
@@ -335,13 +358,17 @@ class PersBTreeNode:
     def is_empty(self):
         return len(self.keys) == 0 and len(self.values) == 0 and len(self.children) == 0
 
-    def _can_release_parents_locks(self):
-        if self._is_root():
-            return False
+    def _can_release_parents_locks_on_insert(self):
         return len(self.keys) < self._max_keys
 
-    def _is_root(self):
-        return self.pointer.block_number == 0
+    def _can_release_parents_locks_on_delete(self):
+        return (len(self.keys) > self._max_keys // 2 and
+                len(self.children) > (self._max_keys // 2 + 1))
+
+    def _lock_child(self, lock_ctx: LockContext, child_pointer: PagePointer, permanent=False):
+        child_lock = self._lock_manager.get_lock(child_pointer)
+        child_lock.acquire()
+        lock_ctx.push(child_lock, permanent)
 
     # TODO: count database capacity
     def to_binary(self) -> bytes:
@@ -412,11 +439,10 @@ class PersBTreeNodeLeaf(PersBTreeNode):
         return binary_data.read()
 
     def insert(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext) -> 'InsertionResult':
-        # print(f"{threading.current_thread().name} -> enter Leaf {self.pointer.block_number}  insert key {key}")
         lock_index = lock_ctx.get_latest_index()
         try:
-            if self._can_release_parents_locks():
-                lock_ctx.release_parent_locks(lock_index)
+            if self._can_release_parents_locks_on_insert():
+                lock_ctx.release_allowed_parent_locks(lock_index)
             for i in range(len(self.keys)):
                 if self.keys[i] == key:
                     raise DuplicateKeyException(f"Duplicate key {key}")
@@ -440,52 +466,58 @@ class PersBTreeNodeLeaf(PersBTreeNode):
                 right_child = self._page_manager.save_new_page(right_child)
 
                 # # TODO: lock when updating pointers
-                # left_child.next = right_child.pointer
-                # left_child.prev = self.prev
-                # right_child.prev = left_child.pointer
-                # right_child.next = self.next
-                # if self.prev:
-                #     prev_child = self._page_manager.read_page(self.prev)
-                #     assert isinstance(prev_child, PersBTreeNodeLeaf)
-                #     prev_child.next = left_child.pointer
-                #     self._page_manager.save_page(prev_child)
-                # if self.next:
-                #     next_child = self._page_manager.read_page(self.next)
-                #     assert isinstance(next_child, PersBTreeNodeLeaf)
-                #     next_child.prev = right_child.pointer
-                #     self._page_manager.save_page(next_child)
-                #
-                # self._page_manager.save_page(left_child)
-                # self._page_manager.save_page(right_child)
+                left_child.next = right_child.pointer
+                left_child.prev = self.prev
+                right_child.prev = left_child.pointer
+                right_child.next = self.next
+                if self.prev:
+                    self._lock_child(lock_ctx, self.prev)
+                    prev_child = self._page_manager.read_page(self.prev)
+                    assert isinstance(prev_child, PersBTreeNodeLeaf)
+                    prev_child.next = left_child.pointer
+                    self._page_manager.save_page(prev_child)
+                if self.next:
+                    self._lock_child(lock_ctx, self.next)
+                    next_child = self._page_manager.read_page(self.next)
+                    assert isinstance(next_child, PersBTreeNodeLeaf)
+                    next_child.prev = right_child.pointer
+                    self._page_manager.save_page(next_child)
+
+                self._page_manager.save_page(left_child)
+                self._page_manager.save_page(right_child)
 
                 parent = PersBTreeNode(self.pointer, [self.keys[mid]], [left_child.pointer, right_child.pointer],
                                        [], self._max_keys, self._page_manager, self._lock_manager)
-                # print(f"{threading.current_thread().name} -> exit Leaf {self.pointer.block_number} insert key {key} -- division")
                 return InsertionResult(is_new_node=True, updated=parent)
             self._page_manager.save_page(self)
-            # print(f"{threading.current_thread().name} -> exit Leaf {self.pointer.block_number} insert key {key} -- save")
             return InsertionResult(is_new_node=False, updated=self)
         finally:
             lock_ctx.release_self_and_child_locks(lock_index)
 
-    def delete(self, key: PersKey) -> DeleteResult:
-        for i in range(len(self.keys)):
-            if self.keys[i] == key:
-                self.keys.pop(i)
-                self.values.pop(i)
-                break
-        else:
-            raise NoSuchKeyException(f'No key {key} found in a tree')
+    def delete(self, key: PersKey, lock_ctx: LockContext) -> DeleteResult:
+        lock_index = lock_ctx.get_latest_index()
+        try:
+            if self._can_release_parents_locks_on_delete():
+                lock_ctx.release_allowed_parent_locks(lock_index)
+            for i in range(len(self.keys)):
+                if self.keys[i] == key:
+                    self.keys.pop(i)
+                    self.values.pop(i)
+                    break
+            else:
+                raise NoSuchKeyException(f'No key {key} found in a tree')
 
-        if self._is_at_least_half_full():
-            # case when after deletion b+tree condition is maintained in leaf, nothing to do more
-            self._page_manager.save_page(self)
-            return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=True, leaf=True)
-        # case when there is not enough elements in leaf after deletion
-        if not self.keys:
-            return DeleteResult(new_first=None, condition_of_tree_valid=False, leaf=True)
-        # there are still some keys available
-        return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=False, leaf=True)
+            if self._is_at_least_half_full():
+                # case when after deletion b+tree condition is maintained in leaf, nothing to do more
+                self._page_manager.save_page(self)
+                return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=True, leaf=True)
+            # case when there is not enough elements in leaf after deletion
+            if not self.keys:
+                return DeleteResult(new_first=None, condition_of_tree_valid=False, leaf=True)
+            # there are still some keys available
+            return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=False, leaf=True)
+        finally:
+            lock_ctx.release_self_and_child_locks(lock_index)
 
     def find(self, key: PersKey) -> DbRecordPointer:
         for i in range(len(self.keys)):
@@ -496,6 +528,8 @@ class PersBTreeNodeLeaf(PersBTreeNode):
     def _is_at_least_half_full(self):
         return len(self.keys) >= self._max_keys // 2
 
+    def _can_release_parents_locks_on_delete(self):
+        return len(self.keys) > self._max_keys // 2
 
 @dataclass
 class InsertionResult:
@@ -529,15 +563,24 @@ class PersBTree:
             lock_ctx.release_self_and_child_locks(lock_index)
 
     def delete(self, key: int) -> None:
-        self._root.delete(PersKey(key))
-        if len(self._root.keys) in [0, 1] and len(self._root.children) == 1:
-            first_child = self._page_manager.read_page(self._root.children[0])  # TODO mark node as garbage
-            self._page_manager.save_page(first_child)
-            self._root = first_child
-        elif not self._root.keys and not self._root.children:
-            self._root = PersBTreeNodeLeaf(PagePointer(0), [], [], [], self._max_keys, None, None, self._page_manager,
-                                           self._lock_manager)
-            self._page_manager.save_page(self._root)
+        pers_key = PersKey(key)
+        lock_ctx = LockContext()
+        root_lock = self._lock_manager.get_lock(PagePointer(0))
+        root_lock.acquire()
+        lock_index = lock_ctx.push(root_lock, permanent=pers_key in self._root.keys)
+        try:
+            self._root.delete(pers_key, lock_ctx)
+            if len(self._root.keys) in [0, 1] and len(self._root.children) == 1:
+                first_child = self._page_manager.read_page(self._root.children[0])  # TODO mark node as garbage
+                self._page_manager.save_page(first_child)
+                self._root = first_child
+            elif not self._root.keys and not self._root.children:
+                self._root = PersBTreeNodeLeaf(PagePointer(0), [], [], [], self._max_keys, None, None,
+                                               self._page_manager,
+                                               self._lock_manager)
+                self._page_manager.save_page(self._root)
+        finally:
+            lock_ctx.release_self_and_child_locks(lock_index)
 
     def find(self, key: int) -> DbRecordPointer:
         return self._root.find(PersKey(key))
