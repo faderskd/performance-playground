@@ -1,4 +1,5 @@
 import io
+import logging
 import os
 import threading
 import typing
@@ -59,6 +60,8 @@ class LockContext:
     def get_latest_index(self):
         return len(self.lock_stack) - 1
 
+    def clear(self):
+        self.lock_stack.clear()
 
 @dataclass
 class DeleteResult:
@@ -214,7 +217,7 @@ class PersBTreeNode:
                         assert isinstance(left_child, PersBTreeNodeLeaf)
                         assert isinstance(child, PersBTreeNodeLeaf)
                         if left_child.prev:
-                            self._lock_child(lock_ctx, left_child.prev)
+                            self._try_lock_child_or_throw(lock_ctx, left_child.prev)
                             prev_child = self._page_manager.read_page(left_child.prev)
                             assert isinstance(prev_child, PersBTreeNodeLeaf)
                             prev_child.next = self.children[i]
@@ -237,7 +240,7 @@ class PersBTreeNode:
                         assert isinstance(right_child, PersBTreeNodeLeaf)
                         assert isinstance(child, PersBTreeNodeLeaf)
                         if right_child.next:
-                            self._lock_child(lock_ctx, right_child.next)
+                            self._try_lock_child_or_throw(lock_ctx, right_child.next)
                             next_child = self._page_manager.read_page(right_child.next)
                             assert isinstance(next_child, PersBTreeNodeLeaf)
                             next_child.prev = self.children[i]
@@ -322,7 +325,6 @@ class PersBTreeNode:
         finally:
             lock_ctx.release_self_and_child_locks(lock_index)
 
-
     def find(self, key: PersKey) -> DbRecordPointer:
         for i in range(len(self.keys)):
             if self.keys[i] > key:
@@ -369,6 +371,14 @@ class PersBTreeNode:
         child_lock = self._lock_manager.get_lock(child_pointer)
         child_lock.acquire()
         lock_ctx.push(child_lock, permanent)
+
+    def _try_lock_child_or_throw(self, lock_ctx: LockContext, child_pointer: PagePointer):
+        child_lock = self._lock_manager.get_lock(child_pointer)
+        acquired = child_lock.acquire(blocking=False)
+        if acquired:
+            lock_ctx.push(child_lock)
+        else:
+            raise SiblingPointerAlreadyLockedException(f"Child {child_pointer} is already locked by different thread")
 
     # TODO: count database capacity
     def to_binary(self) -> bytes:
@@ -455,6 +465,11 @@ class PersBTreeNodeLeaf(PersBTreeNode):
                 self.values.append(value)
 
             if len(self.keys) > self._max_keys:
+                if self.prev:
+                    self._try_lock_child_or_throw(lock_ctx, self.prev)
+                if self.next:
+                    self._try_lock_child_or_throw(lock_ctx, self.next)
+
                 mid = len(self.keys) // 2
                 left_keys, right_keys = self.keys[:mid], self.keys[mid:]
                 left_values, right_values = self.values[:mid], self.values[mid:]
@@ -465,19 +480,16 @@ class PersBTreeNodeLeaf(PersBTreeNode):
                 left_child = self._page_manager.save_new_page(left_child)
                 right_child = self._page_manager.save_new_page(right_child)
 
-                # # TODO: lock when updating pointers
                 left_child.next = right_child.pointer
                 left_child.prev = self.prev
                 right_child.prev = left_child.pointer
                 right_child.next = self.next
                 if self.prev:
-                    self._lock_child(lock_ctx, self.prev)
                     prev_child = self._page_manager.read_page(self.prev)
                     assert isinstance(prev_child, PersBTreeNodeLeaf)
                     prev_child.next = left_child.pointer
                     self._page_manager.save_page(prev_child)
                 if self.next:
-                    self._lock_child(lock_ctx, self.next)
                     next_child = self._page_manager.read_page(self.next)
                     assert isinstance(next_child, PersBTreeNodeLeaf)
                     next_child.prev = right_child.pointer
@@ -519,11 +531,10 @@ class PersBTreeNodeLeaf(PersBTreeNode):
         finally:
             lock_ctx.release_self_and_child_locks(lock_index)
 
-    def find(self, key: PersKey) -> DbRecordPointer:
+    def find(self, key: PersKey) -> typing.Optional[DbRecordPointer]:
         for i in range(len(self.keys)):
             if self.keys[i] == key:
                 return self.values[i]
-        raise NoSuchKeyException(f'No key {key} found in a tree')
 
     def _is_at_least_half_full(self):
         return len(self.keys) >= self._max_keys // 2
@@ -531,12 +542,12 @@ class PersBTreeNodeLeaf(PersBTreeNode):
     def _can_release_parents_locks_on_delete(self):
         return len(self.keys) > self._max_keys // 2
 
+
 @dataclass
 class InsertionResult:
     is_new_node: bool
     updated: typing.Optional[PersBTreeNode]
     insufficient_lock_permissions: bool = False
-
 
 # TODO make it auto-closable
 class PersBTree:
@@ -551,36 +562,49 @@ class PersBTree:
 
     def insert(self, key: int, value: DbRecordPointer):
         lock_ctx = LockContext()
-        root_lock = self._lock_manager.get_lock(PagePointer(0))
-        root_lock.acquire()
-        lock_index = lock_ctx.push(root_lock)
-        try:
-            result = self._root.insert(PersKey(key), value, lock_ctx)
-            if result.is_new_node:
-                self._root = result.updated
-                self._page_manager.save_page(result.updated)
-        finally:
-            lock_ctx.release_self_and_child_locks(lock_index)
+        lock_index = 0
+        retry = True
+        while retry:
+            try:
+                lock_ctx.clear()
+                root_lock = self._lock_manager.get_lock(PagePointer(0))
+                root_lock.acquire()
+                lock_index = lock_ctx.push(root_lock)
+                result = self._root.insert(PersKey(key), value, lock_ctx)
+                if result.is_new_node:
+                    self._root = result.updated
+                    self._page_manager.save_page(result.updated)
+                retry = False
+            except SiblingPointerAlreadyLockedException as e:
+                logging.warning("Aborting insertion operation, will retry..., %s", e)
+            finally:
+                lock_ctx.release_self_and_child_locks(lock_index)
 
     def delete(self, key: int) -> None:
         pers_key = PersKey(key)
         lock_ctx = LockContext()
-        root_lock = self._lock_manager.get_lock(PagePointer(0))
-        root_lock.acquire()
-        lock_index = lock_ctx.push(root_lock, permanent=pers_key in self._root.keys)
-        try:
-            self._root.delete(pers_key, lock_ctx)
-            if len(self._root.keys) in [0, 1] and len(self._root.children) == 1:
-                first_child = self._page_manager.read_page(self._root.children[0])  # TODO mark node as garbage
-                self._page_manager.save_page(first_child)
-                self._root = first_child
-            elif not self._root.keys and not self._root.children:
-                self._root = PersBTreeNodeLeaf(PagePointer(0), [], [], [], self._max_keys, None, None,
-                                               self._page_manager,
-                                               self._lock_manager)
-                self._page_manager.save_page(self._root)
-        finally:
-            lock_ctx.release_self_and_child_locks(lock_index)
+        lock_index = 0
+        retry = True
+        while retry:
+            try:
+                root_lock = self._lock_manager.get_lock(PagePointer(0))
+                root_lock.acquire()
+                lock_index = lock_ctx.push(root_lock, permanent=pers_key in self._root.keys)
+                self._root.delete(pers_key, lock_ctx)
+                if len(self._root.keys) in [0, 1] and len(self._root.children) == 1:
+                    first_child = self._page_manager.read_page(self._root.children[0])  # TODO mark node as garbage
+                    self._page_manager.save_page(first_child)
+                    self._root = first_child
+                elif not self._root.keys and not self._root.children:
+                    self._root = PersBTreeNodeLeaf(PagePointer(0), [], [], [], self._max_keys, None, None,
+                                                   self._page_manager,
+                                                   self._lock_manager)
+                    self._page_manager.save_page(self._root)
+                retry = False
+            except SiblingPointerAlreadyLockedException as e:
+                logging.warning("Aborting insertion operation, will retry..., %s", e)
+            finally:
+                lock_ctx.release_self_and_child_locks(lock_index)
 
     def find(self, key: int) -> DbRecordPointer:
         return self._root.find(PersKey(key))
@@ -632,5 +656,10 @@ class DuplicateKeyException(RuntimeError):
 
 
 class NoSuchKeyException(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
+class SiblingPointerAlreadyLockedException(Exception):
     def __init__(self, msg: str):
         super().__init__(msg)
