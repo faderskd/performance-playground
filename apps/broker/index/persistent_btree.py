@@ -39,29 +39,37 @@ class LockState:
 
 class LockContext:
     def __init__(self):
-        self.lock_stack: typing.List[LockState] = []
+        self._lock_stack: typing.List[typing.List[LockState]] = []
 
-    def push(self, lock: threading.Lock, permanent: bool = False) -> int:
-        self.lock_stack.append(LockState(lock, lock.locked(), permanent))
-        return len(self.lock_stack) - 1
+    def init_new_level(self):
+        self._lock_stack.append([])
 
-    def release_self_and_child_locks(self, index: int):
-        for i in range(len(self.lock_stack) - 1, index - 1, -1):
-            if self.lock_stack[i].is_acquired():
-                self.lock_stack[i].release()
+    def push(self, lock: threading.Lock, permanent: bool = False) -> LockState:
+        lock_state = LockState(lock, lock.locked(), permanent)
+        self._lock_stack[-1].append(lock_state)
+        return lock_state
 
-    def release_allowed_parent_locks(self, index: int):
-        for p in range(index):
-            if self.lock_stack[p].is_permanent():
-                break
-            if self.lock_stack[p].is_acquired():
-                self.lock_stack[p].release()
+    def release_self_and_child_locks(self, level: int):
+        for i in range(len(self._lock_stack) - 1, level - 1, -1):
+            for lock in reversed(self._lock_stack[i]):
+                if lock.is_acquired():
+                    lock.release()
 
-    def get_latest_index(self):
-        return len(self.lock_stack) - 1
+    def release_allowed_parent_locks(self, current_level: int):
+        for level in range(current_level):
+            for lock in self._lock_stack[level]:
+                if lock.is_permanent():
+                    return
+            for lock in self._lock_stack[level]:
+                if lock.is_acquired():
+                    lock.release()
 
     def clear(self):
-        self.lock_stack.clear()
+        self._lock_stack.clear()
+
+    def get_current_level(self) -> int:
+        return len(self._lock_stack) - 1
+
 
 @dataclass
 class DeleteResult:
@@ -88,10 +96,11 @@ class PersBTreeNode:
 
     def insert(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext) -> 'InsertionResult':
         save_curr_node = False
-        lock_index = lock_ctx.get_latest_index()
+        lock_level = lock_ctx.get_current_level()
+        lock_ctx.init_new_level()
         try:
             if self._can_release_parents_locks_on_insert():
-                lock_ctx.release_allowed_parent_locks(lock_index)
+                lock_ctx.release_allowed_parent_locks(lock_level)
             for i in range(len(self.keys)):
                 if self.keys[i] >= key:
                     self._lock_child(lock_ctx, self.children[i])
@@ -121,11 +130,10 @@ class PersBTreeNode:
                 child_mid = (len(self.children) + 1) // 2
                 left_keys, right_keys = self.keys[:mid], self.keys[mid + 1:]
                 left_children, right_children = self.children[:child_mid], self.children[child_mid:]
-                left_child = PersBTreeNode(None, left_keys, left_children, [], self._max_keys, self._page_manager,
-                                           self._lock_manager)
+                left_child = PersBTreeNode(None, left_keys, left_children, [], self._max_keys,
+                                           self._page_manager, self._lock_manager)
                 right_child = PersBTreeNode(None, right_keys, right_children, [], self._max_keys,
-                                            self._page_manager,
-                                            self._lock_manager)
+                                            self._page_manager, self._lock_manager)
                 left_child = self._page_manager.save_new_page(left_child)
                 right_child = self._page_manager.save_new_page(right_child)
 
@@ -136,30 +144,47 @@ class PersBTreeNode:
                 self._page_manager.save_page(self)
             return InsertionResult(is_new_node=False, updated=self)
         finally:
-            lock_ctx.release_self_and_child_locks(lock_index)
+            lock_ctx.release_self_and_child_locks(lock_level)
 
     def delete(self, key: PersKey, lock_ctx: LockContext) -> DeleteResult:
         save_curr_node = False
-        lock_index = lock_ctx.get_latest_index()
+        lock_level = lock_ctx.get_current_level()
+        lock_ctx.init_new_level()
 
         try:
-            if self._can_release_parents_locks_on_delete():
-                lock_ctx.release_allowed_parent_locks(lock_index)
+            if self.can_release_parents_locks_on_delete():
+                lock_ctx.release_allowed_parent_locks(lock_level)
 
             # search for key to delete
             for i in range(len(self.keys)):
                 if self.keys[i] > key:
                     child_pointer = self.children[i]
-                    self._lock_child(lock_ctx, child_pointer, permanent=key in self.keys)
+                    lock_state = self._lock_child(lock_ctx, child_pointer)
                     child = self._page_manager.read_page(child_pointer)
-                    delete_res = child.delete(key, lock_ctx)
+                    lock_state.permanent = key in child.keys
                     break
             else:
                 i = len(self.keys)
                 child_pointer = self.children[i]
-                self._lock_child(lock_ctx, child_pointer, permanent=key in self.keys)
+                lock_state = self._lock_child(lock_ctx, child_pointer, permanent=key in self.keys)
                 child = self._page_manager.read_page(child_pointer)
-                delete_res = child.delete(key, lock_ctx)
+                lock_state.permanent = key in child.keys
+
+            # take locks upfront, do not try to optimize and take all that may be needed
+            left_child = None
+            right_child = None
+            if i > 0:
+                self._lock_child(lock_ctx, self.children[i - 1])
+                left_child = self._page_manager.read_page(self.children[i - 1])
+                if child.is_leaf() and not child.can_release_parents_locks_on_delete() and left_child.prev:
+                    self._try_lock_child_or_throw(lock_ctx, left_child.prev)
+            if i + 1 < len(self.children):
+                self._lock_child(lock_ctx, self.children[i + 1])
+                right_child = self._page_manager.read_page(self.children[i + 1])
+                if child.is_leaf() and not child.can_release_parents_locks_on_delete() and right_child.next:
+                    self._try_lock_child_or_throw(lock_ctx, right_child.next)
+
+            delete_res = child.delete(key, lock_ctx)
 
             # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
             if self._replace_key_if_needed(key, delete_res.new_first):
@@ -169,16 +194,6 @@ class PersBTreeNode:
             borrowed_from_left_child = False
             borrowed_from_right_child = False
             if delete_res.leaf and not delete_res.condition_of_tree_valid:
-                # take locks upfront, do not try to optimize and take all that may be needed
-                left_child = None
-                right_child = None
-                if i > 0:
-                    self._lock_child(lock_ctx, self.children[i - 1])
-                    left_child = self._page_manager.read_page(self.children[i - 1])
-                if i + 1 < len(self.children):
-                    self._lock_child(lock_ctx, self.children[i + 1])
-                    right_child = self._page_manager.read_page(self.children[i + 1])
-
                 if i > 0:
                     if left_child.has_enough_to_lend():
                         # borrow right-most key from left child
@@ -217,7 +232,6 @@ class PersBTreeNode:
                         assert isinstance(left_child, PersBTreeNodeLeaf)
                         assert isinstance(child, PersBTreeNodeLeaf)
                         if left_child.prev:
-                            self._try_lock_child_or_throw(lock_ctx, left_child.prev)
                             prev_child = self._page_manager.read_page(left_child.prev)
                             assert isinstance(prev_child, PersBTreeNodeLeaf)
                             prev_child.next = self.children[i]
@@ -240,7 +254,6 @@ class PersBTreeNode:
                         assert isinstance(right_child, PersBTreeNodeLeaf)
                         assert isinstance(child, PersBTreeNodeLeaf)
                         if right_child.next:
-                            self._try_lock_child_or_throw(lock_ctx, right_child.next)
                             next_child = self._page_manager.read_page(right_child.next)
                             assert isinstance(next_child, PersBTreeNodeLeaf)
                             next_child.prev = self.children[i]
@@ -255,22 +268,12 @@ class PersBTreeNode:
                 delete_res.new_first = self._get_new_first()
             # try to borrow from sibling being grandfather
             if not delete_res.leaf and not delete_res.condition_of_tree_valid:
-                # take locks upfront, do not try to optimize and take all that may be needed
-                left_child = None
-                right_child = None
-                if i > 0:
-                    self._lock_child(lock_ctx, self.children[i - 1])
-                    left_child = self._page_manager.read_page(self.children[i - 1])
-                if i + 1 < len(self.children):
-                    self._lock_child(lock_ctx, self.children[i + 1])
-                    right_child = self._page_manager.read_page(self.children[i + 1])
-
                 if i > 0:
                     if left_child.has_enough_to_lend():
                         # borrow right-most child from left child
                         child.children.insert(0, left_child.children.pop())
                         # it may happen that we need to only override the key or that we need to add a new one
-                        if child._has_enough_keys():
+                        if child.has_enough_keys():
                             child.keys[0] = self.keys[i - 1]
                         else:
                             child.keys.insert(0, self.keys[i - 1])
@@ -284,7 +287,7 @@ class PersBTreeNode:
                         # borrow left-most key from right child
                         child.children.append(right_child.children.pop(0))
                         # it may happen that we need to only override the key or that we need to add a new one
-                        if child._has_enough_keys():
+                        if child.has_enough_keys():
                             child.keys[-1] = self.keys[i]
                         else:
                             child.keys.append(self.keys[i])
@@ -323,7 +326,7 @@ class PersBTreeNode:
                 self._page_manager.save_page(self)
             return delete_res
         finally:
-            lock_ctx.release_self_and_child_locks(lock_index)
+            lock_ctx.release_self_and_child_locks(lock_level)
 
     def find(self, key: PersKey) -> DbRecordPointer:
         for i in range(len(self.keys)):
@@ -335,6 +338,22 @@ class PersBTreeNode:
             child = self._page_manager.read_page(self.children[i])
             res = child.find(key)
         return res
+
+    def has_enough_to_lend(self):
+        return len(self.keys) > self._max_keys // 2
+
+    def is_leaf(self):
+        return not self.children
+
+    def is_empty(self):
+        return len(self.keys) == 0 and len(self.values) == 0 and len(self.children) == 0
+
+    def has_enough_keys(self):
+        return len(self.keys) >= self._max_keys // 2
+
+    def can_release_parents_locks_on_delete(self):
+        return (len(self.keys) > self._max_keys // 2 and
+                len(self.children) > (self._max_keys // 2 + 1))
 
     def _replace_key_if_needed(self, old: PersKey, new: PersKey):
         for i in range(len(self.keys)):
@@ -348,29 +367,16 @@ class PersBTreeNode:
             return leftmost_child.keys[0]
         return None
 
-    def has_enough_to_lend(self):
-        return len(self.keys) > self._max_keys // 2
-
-    def _has_enough_keys(self):
-        return len(self.keys) >= self._max_keys // 2
-
     def _is_at_least_half_full(self):
         return len(self.keys) >= self._max_keys // 2 and len(self.children) > self._max_keys // 2
-
-    def is_empty(self):
-        return len(self.keys) == 0 and len(self.values) == 0 and len(self.children) == 0
 
     def _can_release_parents_locks_on_insert(self):
         return len(self.keys) < self._max_keys
 
-    def _can_release_parents_locks_on_delete(self):
-        return (len(self.keys) > self._max_keys // 2 and
-                len(self.children) > (self._max_keys // 2 + 1))
-
     def _lock_child(self, lock_ctx: LockContext, child_pointer: PagePointer, permanent=False):
         child_lock = self._lock_manager.get_lock(child_pointer)
         child_lock.acquire()
-        lock_ctx.push(child_lock, permanent)
+        return lock_ctx.push(child_lock, permanent)
 
     def _try_lock_child_or_throw(self, lock_ctx: LockContext, child_pointer: PagePointer):
         child_lock = self._lock_manager.get_lock(child_pointer)
@@ -449,10 +455,10 @@ class PersBTreeNodeLeaf(PersBTreeNode):
         return binary_data.read()
 
     def insert(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext) -> 'InsertionResult':
-        lock_index = lock_ctx.get_latest_index()
+        lock_level = lock_ctx.get_current_level()
         try:
             if self._can_release_parents_locks_on_insert():
-                lock_ctx.release_allowed_parent_locks(lock_index)
+                lock_ctx.release_allowed_parent_locks(lock_level)
             for i in range(len(self.keys)):
                 if self.keys[i] == key:
                     raise DuplicateKeyException(f"Duplicate key {key}")
@@ -504,13 +510,13 @@ class PersBTreeNodeLeaf(PersBTreeNode):
             self._page_manager.save_page(self)
             return InsertionResult(is_new_node=False, updated=self)
         finally:
-            lock_ctx.release_self_and_child_locks(lock_index)
+            lock_ctx.release_self_and_child_locks(lock_level)
 
     def delete(self, key: PersKey, lock_ctx: LockContext) -> DeleteResult:
-        lock_index = lock_ctx.get_latest_index()
+        lock_level = lock_ctx.get_current_level()
         try:
-            if self._can_release_parents_locks_on_delete():
-                lock_ctx.release_allowed_parent_locks(lock_index)
+            if self.can_release_parents_locks_on_delete():
+                lock_ctx.release_allowed_parent_locks(lock_level)
             for i in range(len(self.keys)):
                 if self.keys[i] == key:
                     self.keys.pop(i)
@@ -529,18 +535,18 @@ class PersBTreeNodeLeaf(PersBTreeNode):
             # there are still some keys available
             return DeleteResult(new_first=self.keys[0], condition_of_tree_valid=False, leaf=True)
         finally:
-            lock_ctx.release_self_and_child_locks(lock_index)
+            lock_ctx.release_self_and_child_locks(lock_level)
 
     def find(self, key: PersKey) -> typing.Optional[DbRecordPointer]:
         for i in range(len(self.keys)):
             if self.keys[i] == key:
                 return self.values[i]
 
+    def can_release_parents_locks_on_delete(self):
+        return len(self.keys) > self._max_keys // 2
+
     def _is_at_least_half_full(self):
         return len(self.keys) >= self._max_keys // 2
-
-    def _can_release_parents_locks_on_delete(self):
-        return len(self.keys) > self._max_keys // 2
 
 
 @dataclass
@@ -548,6 +554,7 @@ class InsertionResult:
     is_new_node: bool
     updated: typing.Optional[PersBTreeNode]
     insufficient_lock_permissions: bool = False
+
 
 # TODO make it auto-closable
 class PersBTree:
@@ -562,14 +569,17 @@ class PersBTree:
 
     def insert(self, key: int, value: DbRecordPointer):
         lock_ctx = LockContext()
-        lock_index = 0
+        lock_level = 0
         retry = True
         while retry:
             try:
                 lock_ctx.clear()
+                lock_ctx.init_new_level()
+                lock_level = lock_ctx.get_current_level()
                 root_lock = self._lock_manager.get_lock(PagePointer(0))
                 root_lock.acquire()
-                lock_index = lock_ctx.push(root_lock)
+                lock_ctx.push(root_lock)
+
                 result = self._root.insert(PersKey(key), value, lock_ctx)
                 if result.is_new_node:
                     self._root = result.updated
@@ -578,18 +588,22 @@ class PersBTree:
             except SiblingPointerAlreadyLockedException as e:
                 logging.warning("Aborting insertion operation, will retry..., %s", e)
             finally:
-                lock_ctx.release_self_and_child_locks(lock_index)
+                lock_ctx.release_self_and_child_locks(lock_level)
 
     def delete(self, key: int) -> None:
         pers_key = PersKey(key)
         lock_ctx = LockContext()
-        lock_index = 0
+        lock_level = 0
         retry = True
         while retry:
             try:
+                lock_ctx.clear()
+                lock_ctx.init_new_level()
+                lock_level = lock_ctx.get_current_level()
                 root_lock = self._lock_manager.get_lock(PagePointer(0))
                 root_lock.acquire()
-                lock_index = lock_ctx.push(root_lock, permanent=pers_key in self._root.keys)
+                lock_ctx.push(root_lock, permanent=pers_key in self._root.keys)
+
                 self._root.delete(pers_key, lock_ctx)
                 if len(self._root.keys) in [0, 1] and len(self._root.children) == 1:
                     first_child = self._page_manager.read_page(self._root.children[0])  # TODO mark node as garbage
@@ -604,7 +618,7 @@ class PersBTree:
             except SiblingPointerAlreadyLockedException as e:
                 logging.warning("Aborting insertion operation, will retry..., %s", e)
             finally:
-                lock_ctx.release_self_and_child_locks(lock_index)
+                lock_ctx.release_self_and_child_locks(lock_level)
 
     def find(self, key: int) -> DbRecordPointer:
         return self._root.find(PersKey(key))

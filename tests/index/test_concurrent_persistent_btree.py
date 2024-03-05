@@ -1,6 +1,5 @@
 import os
 import random
-import threading
 import typing
 import unittest
 from concurrent.futures import ThreadPoolExecutor

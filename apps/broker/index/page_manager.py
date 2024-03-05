@@ -36,24 +36,23 @@ class PageManager:
     def read_page(self, pointer: PagePointer) -> 'PersBTreeNode':
         with self._lock:
             # if pointer not in self._cache:
-                self._file.seek(pointer.block_number * BLOCK_SIZE_BYTES)
-                data = self._file.read(BLOCK_SIZE_BYTES)
-                data = PersBTreeNode.from_binary(pointer, data, self._max_keys, self,
-                                                                 self._lock_manager)
-        return data
+            self._file.seek(pointer.block_number * BLOCK_SIZE_BYTES)
+            data = self._file.read(BLOCK_SIZE_BYTES)
+            data = PersBTreeNode.from_binary(pointer, data, self._max_keys, self, self._lock_manager)
+            return data
 
     def read_page_or_get_empty(self, pointer: PagePointer) -> 'PersBTreeNode':
         with self._lock:
             # if pointer not in self._cache:
-                self._file.seek(pointer.block_number * BLOCK_SIZE_BYTES)
-                data = self._file.read(BLOCK_SIZE_BYTES)
-                if len(data) == 0:
-                    data = PersBTreeNodeLeaf(pointer, [], [], [], self._max_keys,
-                                                             None, None, self, self._lock_manager)
-                else:
-                    data = PersBTreeNode.from_binary(pointer, data, self._max_keys, self,
-                                                                     self._lock_manager)
-                return data
+            self._file.seek(pointer.block_number * BLOCK_SIZE_BYTES)
+            data = self._file.read(BLOCK_SIZE_BYTES)
+            if len(data) == 0:
+                data = PersBTreeNodeLeaf(pointer, [], [], [], self._max_keys,
+                                         None, None, self, self._lock_manager)
+            else:
+                data = PersBTreeNode.from_binary(pointer, data, self._max_keys, self,
+                                                 self._lock_manager)
+            return data
 
     def read_debug(self, pointer: PagePointer):
         self._file.seek(pointer.block_number * BLOCK_SIZE_BYTES)
