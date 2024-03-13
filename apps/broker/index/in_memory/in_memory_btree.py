@@ -63,9 +63,6 @@ class BTreeNode:
             i = len(self.keys)
             delete_res = self.children[i].delete(key)
 
-        if not delete_res:
-            return
-
         # we deleted from leaf, we are not a parent, we have to replace deleted element (if present) with the inorder successor
         self._replace_key_if_needed(key, delete_res.new_first)
 
@@ -73,12 +70,18 @@ class BTreeNode:
         if delete_res.leaf and not delete_res.condition_of_tree_valid:
             if i > 0 and self.children[i - 1]._has_enough_to_lend():
                 # borrow right-most key from left child
-                self.children[i].keys.insert(0, self.children[i - 1].keys.pop())
+                borrowed_right_most_key = self.children[i - 1].keys.pop()
+                self.children[i].keys.insert(0, borrowed_right_most_key)
                 self.children[i].values.insert(0, self.children[i - 1].values.pop())
+                self.keys[i - 1] = borrowed_right_most_key
             elif i + 1 < len(self.children) and self.children[i + 1]._has_enough_to_lend():
                 # borrow left-most key from right child
-                self.children[i].keys.append(self.children[i + 1].keys.pop(0))
+                borrowed_left_most_key = self.children[i + 1].keys.pop(0)
+                self.children[i].keys.append(borrowed_left_most_key)
                 self.children[i].values.append(self.children[i + 1].values.pop(0))
+                if i > 0:
+                    self.keys[i - 1] = self.children[i].keys[0]
+                self.keys[i] = self.children[i + 1].keys[0]
             else:
                 # we still have invalid child and have to merge
                 if i > 0:
@@ -89,6 +92,15 @@ class BTreeNode:
                     self.children[i].values = new_values
                     self.children[i - 1].keys = []
                     self.children[i - 1].values = []
+                    # update leaf pointers
+                    assert isinstance(self.children[i - 1], BTreeNodeLeaf)
+                    assert isinstance(self.children[i], BTreeNodeLeaf)
+                    if self.children[i - 1].prev:
+                        self.children[i - 1].prev.next = self.children[i]
+                    self.children[i].prev = self.children[i - 1].prev
+
+                    self.keys.pop(i - 1)
+                    self.children.pop(i - 1)
                 elif i + 1 < len(self.children):
                     # merge with right child
                     new_keys = self.children[i].keys + self.children[i + 1].keys
@@ -97,7 +109,16 @@ class BTreeNode:
                     self.children[i].values = new_values
                     self.children[i + 1].keys = []
                     self.children[i + 1].values = []
-            delete_res.new_first = self._rearrange_keys_and_get_new_first()
+                    # update leaf pointers
+                    assert isinstance(self.children[i + 1], BTreeNodeLeaf)
+                    assert isinstance(self.children[i], BTreeNodeLeaf)
+                    if self.children[i + 1].next:
+                        self.children[i + 1].next.prev = self.children[i]
+                    self.children[i].next = self.children[i + 1].next
+
+                    self.keys.pop(i)
+                    self.children.pop(i + 1)
+            delete_res.new_first = self._get_new_first()
         # try to borrow from sibling being grandfather
         if not delete_res.leaf and not delete_res.condition_of_tree_valid:
             if i > 0 and self.children[i - 1]._has_enough_to_lend():
@@ -138,10 +159,7 @@ class BTreeNode:
                     print("Impossibru...")
 
         # we are a parent, we deleted from leaf and tried to restore the tree condition
-        if delete_res.leaf:
-            delete_res.condition_of_tree_valid = self.is_at_least_half_full() and all(c.is_at_least_half_full() for c in self.children)
-        else:
-            delete_res.condition_of_tree_valid = self.is_at_least_half_full()
+        delete_res.condition_of_tree_valid = self.is_at_least_half_full()
         delete_res.leaf = False
         return delete_res
 
@@ -160,24 +178,7 @@ class BTreeNode:
                 self.keys[i] = new
                 break
 
-    def _rearrange_keys_and_get_new_first(self) -> typing.Optional[int]:
-        new_children = []
-        for c in self.children:
-            assert isinstance(c, BTreeNodeLeaf)
-            if not c.keys:
-                if c.prev:
-                    assert isinstance(c.prev, BTreeNodeLeaf)
-                    c.prev.next = c.next
-                if c.next:
-                    assert isinstance(c.next, BTreeNodeLeaf)
-                    c.next.prev = c.prev
-                continue
-            new_children.append(c)
-        self.keys = []
-        self.children = new_children
-        # rearrange our keys
-        for i in range(1, len(self.children)):
-            self.keys.append(self.children[i].keys[0])
+    def _get_new_first(self) -> typing.Optional[int]:
         if self.children:
             return self.children[0].keys[0]
         return None
@@ -263,7 +264,6 @@ class BTreeNodeLeaf(BTreeNode):
                 return self.values[i]
         raise NoSuchKeyException(f'No key {key} found in a tree')
 
-
     def __repr__(self):
         return str(self.keys)
 
@@ -271,13 +271,11 @@ class BTreeNodeLeaf(BTreeNode):
 class BTree:
     def __init__(self, max_keys: int):
         self.root = BTreeNodeLeaf(max_keys)
-        self.height = 1
 
     def insert(self, key: int, value: str):
         maybe_new_root = self.root.insert(key, value)
         if maybe_new_root:
             self.root = maybe_new_root
-            self.height += 1
 
     def delete(self, key: int):
         self.root.delete(key)
@@ -310,7 +308,19 @@ class BTree:
             print(f'[{node_keys}]', end='->')
             curr_node = curr_node.next
 
-    def get_leafs(self):
+    def print_leafs_reversly(self):
+        if not self.root:
+            return
+        curr_node = self.root
+        while curr_node.children:
+            curr_node = curr_node.children[-1]
+        assert isinstance(curr_node, BTreeNodeLeaf)
+        while curr_node:
+            node_keys = "|".join(map(str, reversed(curr_node.keys)))
+            print(f'[{node_keys}]', end='->')
+            curr_node = curr_node.prev
+
+    def get_leafs(self) -> typing.List[int]:
         sorted_keys = []
         if not self.root:
             return []
@@ -319,6 +329,7 @@ class BTree:
             curr_node = curr_node.children[0]
         assert isinstance(curr_node, BTreeNodeLeaf)
         while curr_node:
+            assert len(curr_node.keys) > 0
             sorted_keys.extend(curr_node.keys)
             curr_node = curr_node.next
         return sorted_keys

@@ -7,7 +7,7 @@ from apps.broker.models import Record
 FILE_NAME = 'db' # TODO move to config
 
 app = Blueprint('broker', __name__, template_folder='templates', url_prefix='/broker')
-db = DbEngine(FILE_NAME)
+# db = DbEngine(FILE_NAME)
 
 
 @app.route('/append/', methods=['POST'])

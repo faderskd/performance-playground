@@ -4,17 +4,14 @@ import random
 from unittest import TestCase
 
 from apps.broker.storage_engine import DbEngine, DbRecord
-from tests.test_utils import random_string
+from tests.test_utils import random_string, ensure_file_not_exists_in_current_dir
 
 logger = logging.getLogger(__name__)
 
 
 class TestDbEngine(TestCase):
     def setUp(self) -> None:
-        dir_path = os.path.dirname(os.path.realpath(__file__))
-        test_db_file_path = os.path.join(dir_path, 'db')
-        if os.path.exists(test_db_file_path):
-            os.remove(test_db_file_path)
+        test_db_file_path = ensure_file_not_exists_in_current_dir('db')
         self.db = DbEngine(test_db_file_path)
 
     def test_should_properly_store_data(self):

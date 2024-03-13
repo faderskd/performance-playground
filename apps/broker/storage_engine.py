@@ -1,23 +1,29 @@
+import io
 import os
 
 from dataclasses import dataclass
 from typing import List
 
 from apps.broker.models import Record
-from apps.broker.utils import public, private
+from apps.broker.utils import public, private, package_private
 
 DB_FILE_HEADER_SIZE_BYTES = 1024
+
 BLOCK_SIZE_BYTES = 1024
 BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES = 2  # max 65536 slots
+HEAP_FILE_BLOCKS_COUNT_BYTES = 3 # max 16777216 of blocks
+
 SLOT_OFFSET_SIZE_BYTES = 2  # max 65536 offsets
-SLOT_LENGTH_SIZE = 2  # max 65536 chars
-SLOT_POINTER_SIZE_BYTES = SLOT_OFFSET_SIZE_BYTES + SLOT_LENGTH_SIZE
+SLOT_LENGTH_SIZE_BYTES = 2  # max 65536 chars
+SLOT_POINTER_SIZE_BYTES = SLOT_OFFSET_SIZE_BYTES + SLOT_LENGTH_SIZE_BYTES
+
 BLOCK_MAX_DATA_SIZE = (BLOCK_SIZE_BYTES - BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES - SLOT_POINTER_SIZE_BYTES)
+
 STR_ENCODING = 'utf8'
 INT_ENCODING = 'big'
 
 
-@private
+@package_private
 @dataclass
 class DbSlotPointer:
     offset: int
@@ -25,8 +31,14 @@ class DbSlotPointer:
 
     def to_binary(self) -> bytes:
         return (int(self.offset).to_bytes(SLOT_OFFSET_SIZE_BYTES, INT_ENCODING) +
-                int(self.length).to_bytes(SLOT_LENGTH_SIZE, INT_ENCODING))
+                int(self.length).to_bytes(SLOT_LENGTH_SIZE_BYTES, INT_ENCODING))
 
+    @classmethod
+    def from_binary(cls, data: io.BytesIO):
+        return cls(
+            int.from_bytes(data.read(SLOT_OFFSET_SIZE_BYTES), INT_ENCODING),
+            int.from_bytes(data.read(SLOT_LENGTH_SIZE_BYTES), INT_ENCODING)
+        )
 
 @private
 @dataclass
@@ -53,6 +65,17 @@ class DbRecord:
 class DbRecordPointer:
     block: int
     slot: int
+
+    def to_binary(self) -> bytes:
+        return (int(self.block).to_bytes(HEAP_FILE_BLOCKS_COUNT_BYTES, INT_ENCODING) +
+                int(self.slot).to_bytes(BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES, INT_ENCODING))
+
+    @classmethod
+    def from_binary(cls, data: io.BytesIO):
+        return cls(
+            int.from_bytes(data.read(HEAP_FILE_BLOCKS_COUNT_BYTES), INT_ENCODING),
+            int.from_bytes(data.read(BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES), INT_ENCODING)
+        )
 
 
 @private
@@ -105,7 +128,7 @@ class DbBlock:
         slot_pointers = []
         for i in range(number_of_slots):
             offset_slice = slice(i * SLOT_POINTER_SIZE_BYTES, i * SLOT_POINTER_SIZE_BYTES + SLOT_OFFSET_SIZE_BYTES)
-            length_slice = slice(offset_slice.stop, offset_slice.stop + SLOT_LENGTH_SIZE)
+            length_slice = slice(offset_slice.stop, offset_slice.stop + SLOT_LENGTH_SIZE_BYTES)
             slot_pointers.append(
                 DbSlotPointer(
                     offset=int.from_bytes(binary_slots_pointers[offset_slice], INT_ENCODING),
@@ -166,6 +189,7 @@ class HeapFile:
         return DbBlock.from_binary(index.block, binary_block)
 
 
+# TODO make it auto-closable
 @public
 class DbEngine:
     def __init__(self, heap_file_path: str):
@@ -197,7 +221,8 @@ class DbEngine:
             binary_data = working_block.get_data(index.slot)
             return DbRecord('', binary_data.decode(STR_ENCODING))
 
-    def _create_heap_file(self, file_path):
+    @staticmethod
+    def _create_heap_file(file_path):
         with open(file_path, 'a+') as _:
             pass
 
