@@ -158,17 +158,14 @@ class PersBTreeNode:
             # search for key to delete
             for i in range(len(self.keys)):
                 if self.keys[i] > key:
-                    child_pointer = self.children[i]
-                    lock_state = self._lock_child(lock_ctx, child_pointer)
-                    child = self._page_manager.read_page(child_pointer)
-                    lock_state.permanent = key in child.keys
                     break
             else:
                 i = len(self.keys)
-                child_pointer = self.children[i]
-                lock_state = self._lock_child(lock_ctx, child_pointer, permanent=key in self.keys)
-                child = self._page_manager.read_page(child_pointer)
-                lock_state.permanent = key in child.keys
+
+            child_pointer = self.children[i]
+            lock_state = self._lock_child(lock_ctx, child_pointer)
+            child = self._page_manager.read_page(child_pointer)
+            lock_state.permanent = key in child.keys
 
             # take locks upfront, do not try to optimize and take all that may be needed
             left_child = None
@@ -328,16 +325,24 @@ class PersBTreeNode:
         finally:
             lock_ctx.release_self_and_child_locks(lock_level)
 
-    def find(self, key: PersKey) -> DbRecordPointer:
+    def find(self, key: PersKey, lock_ctx: LockContext) -> DbRecordPointer:
+        lock_level = lock_ctx.get_current_level()
+        lock_ctx.init_new_level()
+
         for i in range(len(self.keys)):
             if self.keys[i] > key:
-                child = self._page_manager.read_page(self.children[i])
-                return child.find(key)
+                break
         else:
             i = len(self.keys)
-            child = self._page_manager.read_page(self.children[i])
-            res = child.find(key)
-        return res
+
+        try:
+            child_pointer = self.children[i]
+            self._lock_child(lock_ctx, child_pointer)
+            lock_ctx.release_allowed_parent_locks(lock_level)
+            child = self._page_manager.read_page(child_pointer)
+            return child.find(key, lock_ctx)
+        finally:
+            lock_ctx.release_self_and_child_locks(lock_level)
 
     def has_enough_to_lend(self):
         return len(self.keys) > self._max_keys // 2
@@ -537,10 +542,14 @@ class PersBTreeNodeLeaf(PersBTreeNode):
         finally:
             lock_ctx.release_self_and_child_locks(lock_level)
 
-    def find(self, key: PersKey) -> typing.Optional[DbRecordPointer]:
+    def find(self, key: PersKey, lock_ctx: LockContext) -> typing.Optional[DbRecordPointer]:
+        lock_level = lock_ctx.get_current_level()
+        lock_ctx.release_allowed_parent_locks(lock_level)
+
         for i in range(len(self.keys)):
             if self.keys[i] == key:
                 return self.values[i]
+        lock_ctx.release_self_and_child_locks(lock_level)
 
     def can_release_parents_locks_on_delete(self):
         return len(self.keys) > self._max_keys // 2
@@ -556,16 +565,16 @@ class InsertionResult:
     insufficient_lock_permissions: bool = False
 
 
-# TODO make it auto-closable
 class PersBTree:
-    def __init__(self, index_file_path: str, max_keys: int):
-        from apps.broker.index.page_manager import PageManager
+    ROOT_PAGE = PagePointer(0)
 
+    def __init__(self, index_file_path: str, max_keys: int):
+        self._file_handle = None
+        self._page_manager = None
+        self._root = None
+        self._index_file_path = index_file_path
         self._max_keys = max_keys
-        self._file_handle = self._get_or_create_index_file(index_file_path)
-        self._page_manager = PageManager(self._file_handle, max_keys)
         self._lock_manager = LockManager()
-        self._root = self._get_or_create_root()
 
     def insert(self, key: int, value: DbRecordPointer):
         lock_ctx = LockContext()
@@ -576,7 +585,7 @@ class PersBTree:
                 lock_ctx.clear()
                 lock_ctx.init_new_level()
                 lock_level = lock_ctx.get_current_level()
-                root_lock = self._lock_manager.get_lock(PagePointer(0))
+                root_lock = self._lock_manager.get_lock(self.ROOT_PAGE)
                 root_lock.acquire()
                 lock_ctx.push(root_lock)
 
@@ -600,7 +609,7 @@ class PersBTree:
                 lock_ctx.clear()
                 lock_ctx.init_new_level()
                 lock_level = lock_ctx.get_current_level()
-                root_lock = self._lock_manager.get_lock(PagePointer(0))
+                root_lock = self._lock_manager.get_lock(self.ROOT_PAGE)
                 root_lock.acquire()
                 lock_ctx.push(root_lock, permanent=pers_key in self._root.keys)
 
@@ -610,7 +619,7 @@ class PersBTree:
                     self._page_manager.save_page(first_child)
                     self._root = first_child
                 elif not self._root.keys and not self._root.children:
-                    self._root = PersBTreeNodeLeaf(PagePointer(0), [], [], [], self._max_keys, None, None,
+                    self._root = PersBTreeNodeLeaf(self.ROOT_PAGE, [], [], [], self._max_keys, None, None,
                                                    self._page_manager,
                                                    self._lock_manager)
                     self._page_manager.save_page(self._root)
@@ -621,7 +630,16 @@ class PersBTree:
                 lock_ctx.release_self_and_child_locks(lock_level)
 
     def find(self, key: int) -> DbRecordPointer:
-        return self._root.find(PersKey(key))
+        lock_ctx = LockContext()
+        lock_ctx.init_new_level()
+        lock_level = 0
+        root_lock = self._lock_manager.get_lock(self.ROOT_PAGE)
+        try:
+            root_lock.acquire()
+            lock_ctx.push(root_lock)
+            return self._root.find(PersKey(key), lock_ctx)
+        finally:
+            lock_ctx.release_self_and_child_locks(lock_level)
 
     def get_leafs(self) -> typing.List[PersKey]:
         sorted_keys = []
@@ -662,6 +680,17 @@ class PersBTree:
             with open(file_path, 'w+') as file:
                 pass
         return open(file_path, 'r+b')
+
+    def __enter__(self) -> 'PersBTree':
+        from apps.broker.index.page_manager import PageManager
+
+        self._file_handle = self._get_or_create_index_file(self._index_file_path)
+        self._page_manager = PageManager(self._file_handle, self._max_keys)
+        self._root = self._get_or_create_root()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._file_handle.close()
 
 
 class DuplicateKeyException(RuntimeError):
