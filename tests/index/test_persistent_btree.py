@@ -507,3 +507,25 @@ class TestBTree(unittest.TestCase):
             # when
             for k in large_array[len(large_array) - 100:]:
                 self.assertEqual(tree.find(k), DbRecordPointer(k, k))
+
+    def test_should_update_tree_leafs(self):
+        with PersBTree(self.file_path, 5) as tree:
+            # given
+
+            large_array = [i for i in range(1000)]
+            random.shuffle(large_array)
+
+            for k in large_array:
+                tree.insert(k, DbRecordPointer(k, k))
+
+            # when
+            for i, k in enumerate(large_array):
+                if i % 2 == 0:
+                    tree.update(k, DbRecordPointer(k + 1, k + 1))
+
+            # when
+            for i, k in enumerate(large_array):
+                if i % 2 == 0:
+                    self.assertEqual(tree.find(k), DbRecordPointer(k + 1, k + 1))
+                else:
+                    self.assertEqual(tree.find(k), DbRecordPointer(k, k))

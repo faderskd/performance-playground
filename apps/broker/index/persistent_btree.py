@@ -344,6 +344,25 @@ class PersBTreeNode:
         finally:
             lock_ctx.release_self_and_child_locks(lock_level)
 
+    def update(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext):
+        lock_level = lock_ctx.get_current_level()
+        lock_ctx.init_new_level()
+
+        for i in range(len(self.keys)):
+            if self.keys[i] > key:
+                break
+        else:
+            i = len(self.keys)
+
+        try:
+            child_pointer = self.children[i]
+            self._lock_child(lock_ctx, child_pointer)
+            lock_ctx.release_allowed_parent_locks(lock_level)
+            child = self._page_manager.read_page(child_pointer)
+            return child.update(key, value, lock_ctx)
+        finally:
+            lock_ctx.release_self_and_child_locks(lock_level)
+
     def has_enough_to_lend(self):
         return len(self.keys) > self._max_keys // 2
 
@@ -544,12 +563,28 @@ class PersBTreeNodeLeaf(PersBTreeNode):
 
     def find(self, key: PersKey, lock_ctx: LockContext) -> typing.Optional[DbRecordPointer]:
         lock_level = lock_ctx.get_current_level()
-        lock_ctx.release_allowed_parent_locks(lock_level)
+        try:
+            lock_ctx.release_allowed_parent_locks(lock_level)
 
-        for i in range(len(self.keys)):
-            if self.keys[i] == key:
-                return self.values[i]
-        lock_ctx.release_self_and_child_locks(lock_level)
+            for i in range(len(self.keys)):
+                if self.keys[i] == key:
+                    return self.values[i]
+        finally:
+            lock_ctx.release_self_and_child_locks(lock_level)
+
+    def update(self, key: PersKey, value: DbRecordPointer, lock_ctx: LockContext):
+        lock_level = lock_ctx.get_current_level()
+        try:
+            lock_ctx.release_allowed_parent_locks(lock_level)
+
+            for i in range(len(self.keys)):
+                if self.keys[i] == key:
+                    self.values[i] = value
+                    self._page_manager.save_page(self)
+                    return
+            raise NoSuchKeyException(f'No key {key} found in a tree')
+        finally:
+            lock_ctx.release_self_and_child_locks(lock_level)
 
     def can_release_parents_locks_on_delete(self):
         return len(self.keys) > self._max_keys // 2
@@ -638,6 +673,18 @@ class PersBTree:
             root_lock.acquire()
             lock_ctx.push(root_lock)
             return self._root.find(PersKey(key), lock_ctx)
+        finally:
+            lock_ctx.release_self_and_child_locks(lock_level)
+
+    def update(self, key: int, value: DbRecordPointer):
+        lock_ctx = LockContext()
+        lock_ctx.init_new_level()
+        lock_level = 0
+        root_lock = self._lock_manager.get_lock(self.ROOT_PAGE)
+        try:
+            root_lock.acquire()
+            lock_ctx.push(root_lock)
+            return self._root.update(PersKey(key), value, lock_ctx)
         finally:
             lock_ctx.release_self_and_child_locks(lock_level)
 
