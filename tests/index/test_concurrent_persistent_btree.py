@@ -5,7 +5,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 from apps.broker.index.persistent_btree import PersBTree
-from apps.broker.storage_engine import DbRecordPointer
+from apps.broker.storage.storage_engine import DbRecordPointer
 from tests.test_utils import ensure_file_not_exists_in_current_dir
 
 

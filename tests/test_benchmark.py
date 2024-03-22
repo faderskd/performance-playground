@@ -1,74 +1,60 @@
 import logging
 import threading
+import typing
 from concurrent.futures.thread import ThreadPoolExecutor
 from typing import List
 from unittest import TestCase
 
-from apps.broker.storage_engine import DbEngine, DbRecord
+from apps.broker.storage.storage_engine import DbEngine, DbRecord
 from tests.profiler_utils import profile
-from tests.test_utils import random_string
+from tests.test_utils import random_string, ensure_file_not_exists_in_current_dir
 
 logger = logging.getLogger(__name__)
 
 
 class TestBenchmark(TestCase):
     def setUp(self) -> None:
-        # TODO remove db file or create a temporary one
-        self.db = DbEngine()
-        self.records_count = 100_000
-        self.should_stop = threading.Event()
-        self.records = self._write_init_data_to_db(self.records_count)
+        test_db_file_path = ensure_file_not_exists_in_current_dir('db')
+        self.db = DbEngine(test_db_file_path)
 
-    def test_should_run_benchmark(self):
+    def test_should_concurrently_append_records(self):
         # given
-        read_workers = 4
-        reader_thread_pool = ThreadPoolExecutor(max_workers=read_workers)
+        workers = 10
+        records_count = 1000
+        reader_thread_pool = ThreadPoolExecutor(max_workers=workers)
+        records_to_insert = [i for i in range(records_count)]
 
-        read_records_per_thread = self.records_count // read_workers
+        chunks = self.divide_into_chunks(records_to_insert, workers)
 
-        records_as_set = {r.data for r in self.records}
-        offsets = list(range(self.records_count))
+        def writer_job(chunk: List[int]):
+            record_pointers = []
+            for k in chunk:
+                pointer = self.db.append_record(DbRecord(str(k), str(k)))
+                record_pointers.append(pointer)
+            return record_pointers
 
-        def reader_job(worker_number):
-            def job():
-                i = 0
-                count = 0
-                while not self.should_stop.is_set():
-                    start = worker_number * read_records_per_thread
-                    curr_index = start + i % read_records_per_thread
-                    record = self.db.read_record(offsets[curr_index])
-                    assert record.data in records_as_set
-
-                    i += 1
-                    count += 1
-                return count
-
-            return job
-
-        read_futures = []
-        for i in range(read_workers):
-            read_futures.append(reader_thread_pool.submit(reader_job(i)))
-
-        threading.Thread(target=self.writer_job).run()
+        write_futures = []
+        for c in chunks:
+            write_futures.append(reader_thread_pool.submit(writer_job, c))
 
         # then
-        total_operations = 0
-        for f in read_futures:
-            total_operations += f.result()
-        logger.info("Total read throughput: %d", total_operations)
+        pointers = []
+        for f in write_futures:
+            pointers += f.result()
 
-    def test_should_run_benchmark_with_profiler(self):
-        with profile():
-            self.test_should_run_benchmark()
+        result_values = []
+        for pointer in pointers:
+            result_values.append(int(self.db.read_record(pointer).data))
 
-    def _write_init_data_to_db(self, records_count: int) -> List[DbRecord]:
-        records = [DbRecord(id=random_string(5), data=random_string(10)) for _ in range(records_count)]
-        for rec_idx in range(self.records_count):
-            self.db.append_record(records[rec_idx])
+        self.assertEqual(sorted(result_values), records_to_insert)
 
-        return records
+    @staticmethod
+    def divide_into_chunks(records: List[typing.Any], chunks: int) -> List[List[typing.Any]]:
+        chunk_size = len(records) // chunks
+        result = [records[i * chunk_size: (i + 1) * chunk_size] for i in range(chunks - 1)]
+        result.append(records[(chunks - 1) * chunk_size:])
+        return result
 
-    def writer_job(self):
-        for rec in self.records:
-            self.db.append_record(rec)
-        self.should_stop.set()
+    # def test_should_run_benchmark_with_profiler(self):
+    #     with profile():
+    #         self.test_should_run_benchmark()

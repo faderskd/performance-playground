@@ -3,7 +3,7 @@ import random
 import unittest
 
 from apps.broker.index.persistent_btree import PersBTree, PersBTreeNode, PersBTreeNodeLeaf, PagePointer, PersKey
-from apps.broker.storage_engine import DbRecordPointer
+from apps.broker.storage.storage_engine import DbRecordPointer
 from tests.test_utils import ensure_file_not_exists_in_current_dir
 
 

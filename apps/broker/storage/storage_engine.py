@@ -4,14 +4,13 @@ import os
 from dataclasses import dataclass
 from typing import List
 
-from apps.broker.models import Record
 from apps.broker.utils import public, private, package_private
 
 DB_FILE_HEADER_SIZE_BYTES = 1024
 
 BLOCK_SIZE_BYTES = 1024
 BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES = 2  # max 65536 slots
-HEAP_FILE_BLOCKS_COUNT_BYTES = 3 # max 16777216 of blocks
+HEAP_FILE_BLOCKS_COUNT_BYTES = 3  # max 16777216 of blocks
 
 SLOT_OFFSET_SIZE_BYTES = 2  # max 65536 offsets
 SLOT_LENGTH_SIZE_BYTES = 2  # max 65536 chars
@@ -40,24 +39,25 @@ class DbSlotPointer:
             int.from_bytes(data.read(SLOT_LENGTH_SIZE_BYTES), INT_ENCODING)
         )
 
+
 @private
 @dataclass
 class DbSlot:
     data: bytearray
 
 
-@private
+@public
 @dataclass
 class DbRecord:
-    id: str
+    key: str
     data: str
 
-    @classmethod
-    def from_model(cls, record: Record):
-        return cls(record.id, record.data)
+    def to_binary(self) -> bytearray:
+        return bytearray((self.key + ":").encode(STR_ENCODING)) + bytearray(self.data.encode(STR_ENCODING))
 
-    def to_model(self) -> Record:
-        return Record(id=self.id, data=self.data)
+    @classmethod
+    def from_binary(cls, data: bytes) -> 'DbRecord':
+        return cls(*data.decode(STR_ENCODING).split(":"))
 
 
 @public
@@ -108,7 +108,7 @@ class DbBlock:
         return DbRecordPointer(self.block_number, len(self._slot_pointers) - 1)
 
     def has_space_for_data(self, data: bytes) -> bool:
-        last_slot_pointer_offset = BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES + len(self._slot_pointers)  * SLOT_POINTER_SIZE_BYTES
+        last_slot_pointer_offset = BLOCK_NUMBER_OF_SLOTS_SIZE_BYTES + len(self._slot_pointers) * SLOT_POINTER_SIZE_BYTES
         if self._slot_pointers:
             first_data_pointer_offset = self._slot_pointers[-1].offset
         else:
@@ -189,6 +189,7 @@ class HeapFile:
         return DbBlock.from_binary(index.block, binary_block)
 
 
+# TODO make it concurrent safe
 # TODO make it auto-closable
 @public
 class DbEngine:
@@ -196,8 +197,8 @@ class DbEngine:
         self._db_file_path = heap_file_path
         self._create_heap_file(self._db_file_path)
 
-    def append_record(self, record: DbRecord) -> (int, int):
-        binary_data = bytearray(record.data.encode(STR_ENCODING))
+    def append_record(self, record: DbRecord) -> DbRecordPointer:
+        binary_data = record.to_binary()
         if not DbBlock.data_fits_empty_block(binary_data):
             raise DataToLargeException(f'Maximum data size is {BLOCK_MAX_DATA_SIZE}')
 
@@ -219,7 +220,7 @@ class DbEngine:
             heap_file = HeapFile(file)
             working_block = heap_file.get_block(index)
             binary_data = working_block.get_data(index.slot)
-            return DbRecord('', binary_data.decode(STR_ENCODING))
+            return DbRecord.from_binary(binary_data)
 
     @staticmethod
     def _create_heap_file(file_path):

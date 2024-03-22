@@ -8,7 +8,7 @@ from enum import Enum
 
 from apps.broker.index.lock_manager import LockManager
 from apps.broker.index.persistent_data import PagePointer, PersKey
-from apps.broker.storage_engine import DbRecordPointer, INT_ENCODING
+from apps.broker.storage.storage_engine import DbRecordPointer, INT_ENCODING
 
 MAX_KEYS_LENGTH_BYTES = 1  # max 255 keys
 MAX_VALUES_LENGTH_BYTES = 1  # max 255 keys
@@ -105,13 +105,13 @@ class PersBTreeNode:
                 if self.keys[i] >= key:
                     self._lock_child(lock_ctx, self.children[i])
                     child_node = self._page_manager.read_page(self.children[i])
-                    insertion_result = child_node.insert(key, value, lock_ctx)
+                    insertion_result = child_node.append(key, value, lock_ctx)
                     insert_index = i
                     break
             else:
                 self._lock_child(lock_ctx, self.children[-1])
                 child_node = self._page_manager.read_page(self.children[-1])
-                insertion_result = child_node.insert(key, value, lock_ctx)
+                insertion_result = child_node.append(key, value, lock_ctx)
                 insert_index = len(self.children)
 
             if insertion_result.is_new_node:
@@ -195,8 +195,8 @@ class PersBTreeNode:
                     if left_child.has_enough_to_lend():
                         # borrow right-most key from left child
                         borrowed_right_most_key = left_child.keys.pop()
-                        child.keys.insert(0, borrowed_right_most_key)
-                        child.values.insert(0, left_child.values.pop())
+                        child.keys.append(0, borrowed_right_most_key)
+                        child.values.append(0, left_child.values.pop())
                         self.keys[i - 1] = borrowed_right_most_key
                         self._page_manager.save_page(left_child)
                         self._page_manager.save_page(child)
@@ -624,7 +624,7 @@ class PersBTree:
                 root_lock.acquire()
                 lock_ctx.push(root_lock)
 
-                result = self._root.insert(PersKey(key), value, lock_ctx)
+                result = self._root.append(PersKey(key), value, lock_ctx)
                 if result.is_new_node:
                     self._root = result.updated
                     self._page_manager.save_page(result.updated)
