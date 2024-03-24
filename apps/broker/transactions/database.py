@@ -55,8 +55,8 @@ class DbRecordDoesNotExists(BaseException):
 
 
 class BufferPool:
-    def __init__(self):
-        _file_path = os.path.join(os.path.dirname(__file__), "db.txt")
+    def __init__(self, file_path):
+        _file_path = file_path
         self._create_file(_file_path)
         self._file = open(_file_path, 'r+b')
         self._end_offset = 0
@@ -102,8 +102,10 @@ class BufferPool:
 
 
 class Database:
-    def __init__(self):
-        self._buff_pool = BufferPool()
+    def __init__(self, file_path=None):
+        if not file_path:
+            file_path = os.path.join(os.path.dirname(__file__), "db.txt")
+        self._buff_pool = BufferPool(file_path)
         self._index: typing.Dict[DbKey, PersistedDbRecord] = self._buff_pool.load_all()
 
     def insert(self, record: DbRecord) -> PersistedDbRecord:
