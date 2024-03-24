@@ -9,6 +9,7 @@ INT_ENCODING = 'big'
 MAX_RECORD_LENGTH_BYTES = 4  # 2^31 - 1
 UTF8 = 'utf-8'
 
+
 @dataclass(frozen=True)
 class DbKey:
     key: str
@@ -101,6 +102,11 @@ class BufferPool:
             pass
 
 
+@dataclass
+class TxId:
+    id: int
+
+
 class Database:
     def __init__(self, file_path=None):
         if not file_path:
@@ -136,3 +142,24 @@ class Database:
 
     def close(self):
         self._buff_pool.close()
+
+    def begin_transaction(self) -> TxId:
+        pass
+
+    def txt_insert(self, tx_id: TxId, record: DbRecord) -> None:
+        self.insert(record)
+
+    def txt_update(self, tx_id: TxId, record: DbRecord) -> None:
+        self.update(record)
+
+    def txt_delete(self, tx_id: TxId, key: DbKey) -> None:
+        self.delete(key)
+
+    def txt_read(self, tx_id: TxId, key: DbKey) -> PersistedDbRecord:
+        return self.read(key)
+
+    def abort(self, tx_id: TxId) -> None:
+        pass
+
+    def commit(self, tx_id: TxId) -> None:
+        pass
