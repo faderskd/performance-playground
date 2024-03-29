@@ -1,58 +1,11 @@
+import abc
 import io
 import os
 import typing
 from dataclasses import dataclass
 
-from apps.broker.storage.storage_engine import DbRecord
-
-INT_ENCODING = 'big'
-MAX_RECORD_LENGTH_BYTES = 4  # 2^31 - 1
-UTF8 = 'utf-8'
-
-
-@dataclass(frozen=True)
-class DbKey:
-    key: str
-
-    def to_str(self):
-        return self.key
-
-
-@dataclass(frozen=True)
-class DbRecord:
-    key: DbKey
-    value: typing.Any
-
-    def to_str(self):
-        return f"{self.key.to_str()}={self.value}"
-
-    @classmethod
-    def from_str(cls, s: str) -> 'DbRecord':
-        data = s.split("=")
-        return DbRecord(DbKey(data[0]), data[1])
-
-
-@dataclass(frozen=True)
-class PersistedDbRecord:
-    offset: int
-    record: DbRecord
-
-    def to_binary(self) -> io.BytesIO:
-        record_bytes = self.record.to_str().encode(UTF8)
-        length = int(len(record_bytes)).to_bytes(MAX_RECORD_LENGTH_BYTES, INT_ENCODING)
-        buff = io.BytesIO()
-        buff.write(length)
-        buff.write(record_bytes)
-        return buff
-
-    @classmethod
-    def from_binary(cls, offset: int, length: int, buff: io.BytesIO) -> 'PersistedDbRecord':
-        return PersistedDbRecord(offset, DbRecord.from_str(buff.read(length).decode(UTF8)))
-
-
-class DbRecordDoesNotExists(BaseException):
-    def __init__(self, msg: str):
-        super().__init__(msg)
+from apps.broker.transactions.record import INT_ENCODING, MAX_RECORD_LENGTH_BYTES, DbKey, DbRecord, PersistedDbRecord, \
+    DbRecordDoesNotExists
 
 
 class BufferPool:
@@ -102,9 +55,44 @@ class BufferPool:
             pass
 
 
-@dataclass
-class TxId:
+@dataclass(frozen=True)
+class TxnId:
     id: int
+
+
+class TxnIdGenerator:
+    def __init__(self):
+        self._txn_id = -1
+
+    def generate(self) -> TxnId:
+        self._txn_id += 1
+        return TxnId(self._txn_id)
+
+
+class TxnOp(abc.ABC):
+    pass
+
+
+class TxnInsertOp(TxnOp):
+    def __init__(self, record: DbRecord):
+        self.record = record
+
+
+class TxnMetadata:
+    def __init__(self):
+        self._operations: typing.List[TxnOp] = []
+
+    def add_operation(self, txn_op: TxnOp):
+        self._operations.append(txn_op)
+
+    @property
+    def operations(self) -> typing.List[TxnOp]:
+        return self._operations
+
+
+class InvalidTransactionId(RuntimeError):
+    def __init__(self, msg):
+        super().__init__(msg)
 
 
 class Database:
@@ -113,6 +101,8 @@ class Database:
             file_path = os.path.join(os.path.dirname(__file__), "db.txt")
         self._buff_pool = BufferPool(file_path)
         self._index: typing.Dict[DbKey, PersistedDbRecord] = self._buff_pool.load_all()
+        self._txn_generator = TxnIdGenerator()
+        self._pending_transactions: typing.Dict[TxnId, TxnMetadata] = dict()
 
     def insert(self, record: DbRecord) -> PersistedDbRecord:
         persisted_record = self._buff_pool.append(record)
@@ -143,23 +133,35 @@ class Database:
     def close(self):
         self._buff_pool.close()
 
-    def begin_transaction(self) -> TxId:
-        pass
+    def begin_transaction(self) -> TxnId:
+        txn_id = self._txn_generator.generate()
+        self._pending_transactions[txn_id] = TxnMetadata()
+        return txn_id
 
-    def txt_insert(self, tx_id: TxId, record: DbRecord) -> None:
-        self.insert(record)
+    def txt_insert(self, tx_id: TxnId, record: DbRecord) -> None:
+        self._ensure_transaction_exists(tx_id)
+        self._pending_transactions[tx_id].add_operation(TxnInsertOp(record))
 
-    def txt_update(self, tx_id: TxId, record: DbRecord) -> None:
+    def txn_update(self, tx_id: TxnId, record: DbRecord) -> None:
         self.update(record)
 
-    def txt_delete(self, tx_id: TxId, key: DbKey) -> None:
+    def txt_delete(self, tx_id: TxnId, key: DbKey) -> None:
         self.delete(key)
 
-    def txt_read(self, tx_id: TxId, key: DbKey) -> PersistedDbRecord:
+    def txt_read(self, tx_id: TxnId, key: DbKey) -> PersistedDbRecord:
         return self.read(key)
 
-    def abort(self, tx_id: TxId) -> None:
-        pass
+    def txn_abort(self, tx_id: TxnId) -> None:
+        self._ensure_transaction_exists(tx_id)
+        del self._pending_transactions[tx_id]
 
-    def commit(self, tx_id: TxId) -> None:
-        pass
+    def txn_commit(self, tx_id: TxnId) -> None:
+        self._ensure_transaction_exists(tx_id)
+        for op in self._pending_transactions[tx_id].operations:
+            if isinstance(op, TxnInsertOp):
+                self.insert(op.record)
+        del self._pending_transactions[tx_id]
+
+    def _ensure_transaction_exists(self, tx_id):
+        if tx_id not in self._pending_transactions:
+            raise InvalidTransactionId(f"There is no pending transaction for tx_id: {tx_id}")

@@ -7,94 +7,95 @@ from dataclasses import dataclass
 from typing import List
 from unittest import TestCase
 
-from apps.broker.transactions.database import Database, DbKey, DbRecord, TxId
+from apps.broker.transactions.database import Database, TxnId
+from apps.broker.transactions.record import DbKey, DbRecord, DbRecordDoesNotExists
 from tests.test_utils import random_string, ensure_file_not_exists_in_current_dir
 
 logger = logging.getLogger(__name__)
 
 
-class TxOperation(abc.ABC):
+class TxnOperation(abc.ABC):
     @abc.abstractmethod
-    def execute(self, db: Database, tx: TxId):
+    def execute(self, db: Database, tx: TxnId):
         pass
 
 
 @dataclass
-class TxInsertOp(TxOperation):
+class TxnInsertOp(TxnOperation):
     record: DbRecord
 
-    def execute(self, db: Database, tx_id: TxId):
-        db.txt_insert(tx_id, self.record)
+    def execute(self, db: Database, txn_id: TxnId):
+        db.txt_insert(txn_id, self.record)
 
 
 @dataclass
-class TxUpdateOp(TxOperation):
+class TxnUpdateOp(TxnOperation):
     record: DbRecord
 
-    def execute(self, db: Database, tx_id: TxId):
-        db.txt_update(tx_id, self.record)
+    def execute(self, db: Database, txn_id: TxnId):
+        db.txn_update(txn_id, self.record)
 
 
 @dataclass
-class TxDeleteOp(TxOperation):
+class TxnDeleteOp(TxnOperation):
     record: DbRecord
 
-    def execute(self, db: Database, tx_id: TxId):
-        db.txt_delete(tx_id, self.record.key)
+    def execute(self, db: Database, txn_id: TxnId):
+        db.txt_delete(txn_id, self.record.key)
 
 
 @dataclass
-class TxReadOp(TxOperation):
+class TxnReadOp(TxnOperation):
     record: DbRecord
 
-    def execute(self, db: Database, tx_id: TxId):
-        db.txt_read(tx_id, self.record.key)
+    def execute(self, db: Database, txn_id: TxnId):
+        db.txt_read(txn_id, self.record.key)
 
 
 @dataclass
-class TxIncrementIntOp(TxOperation):
+class TxnIncrementIntOp(TxnOperation):
     record: DbRecord
 
-    def execute(self, db: Database, tx_id: TxId):
-        current_val = int(db.txt_read(tx_id, self.record.key).record.value)
+    def execute(self, db: Database, txn_id: TxnId):
+        current_val = int(db.txt_read(txn_id, self.record.key).record.value)
         current_val += 1
         new_record = DbRecord(self.record.key, current_val)
-        db.txt_update(tx_id, new_record)
+        db.txn_update(txn_id, new_record)
 
 
 @dataclass
-class TxConcatStrOp(TxOperation):
+class TxnConcatStrOp(TxnOperation):
     record: DbRecord
     add_string: str
 
-    def execute(self, db: Database, tx_id: TxId):
-        current_val = db.txt_read(tx_id, self.record.key).record.value
+    def execute(self, db: Database, txn_id: TxnId):
+        current_val = db.txt_read(txn_id, self.record.key).record.value
         current_val += self.add_string
         new_record = DbRecord(self.record.key, current_val)
-        db.txt_update(tx_id, new_record)
+        db.txn_update(txn_id, new_record)
 
 
 class Transaction:
     def __init__(self):
-        self._ops: typing.List[TxOperation] = []
+        self._ops: typing.List[TxnOperation] = []
 
-    def add(self, operation: TxOperation):
+    def add(self, operation: TxnOperation):
         self._ops.append(operation)
 
     def execute(self, db: Database, abort=False):
-        tx_id = db.begin_transaction()
+        txn_id = db.begin_transaction()
         for op in self._ops:
-            op.execute(db, tx_id)
+            op.execute(db, txn_id)
         if abort:
-            db.abort(tx_id)
+            db.txn_abort(txn_id)
         else:
-            db.commit(tx_id)
+            db.txn_commit(txn_id)
 
 
 def threaded_insert(chunk: List[DbRecord], db: Database) -> None:
     for rec in chunk:
         transaction = Transaction()
-        transaction.add(TxInsertOp(rec))
+        transaction.add(TxnInsertOp(rec))
         transaction.execute(db)
 
 
@@ -129,13 +130,53 @@ class TestDbEngine(TestCase):
         for idx in indexes:
             self.assertEqual(f"value{idx}", db.read(DbKey(f"id{idx}")).record.value)
 
+    def test_should_see_only_committed_changes_for_insert(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+
+        # when
+        tx_id = db.begin_transaction()
+        db.txt_insert(tx_id, record)
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.read(DbKey("key"))
+
+        # when
+        db.txn_commit(tx_id)
+
+        # then
+        self.assertEqual(db.read(DbKey("key")).record, record)
+
+    def test_should_not_see_aborted_transaction_changes(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+
+        # when
+        tx_id = db.begin_transaction()
+        db.txt_insert(tx_id, record)
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.read(DbKey("key"))
+
+        # when
+        db.txn_abort(tx_id)
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.read(DbKey("key"))
+
+    # TODO: add complex transactions
     def test_should_handle_concurrent_transactions(self):
         # given
         db = Database(self.test_db_file_path)
         existing_records = [i for i in range(10000)]
         records_to_insert = [DbRecord(DbKey(f"id{i}"), f"val{i}") for i in
                              range(len(existing_records), int(1.25 * len(existing_records)))]
-        insert_threads = 1
+        insert_threads = 5
         thread_pool = ThreadPoolExecutor(max_workers=insert_threads, thread_name_prefix="test-transactions")
 
         # for rec in existing_records:
