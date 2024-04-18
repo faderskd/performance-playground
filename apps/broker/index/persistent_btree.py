@@ -116,14 +116,14 @@ class PersBTreeNode:
 
             if insertion_result.is_new_node:
                 save_curr_node = True
-                first_key = insertion_result.updated.keys[0]
+                first_key = insertion_result.record.keys[0]
                 self.keys.insert(insert_index, first_key)
                 if insert_index < len(self.children):
-                    self.children = (self.children[:insert_index] + insertion_result.updated.children +
+                    self.children = (self.children[:insert_index] + insertion_result.record.children +
                                      self.children[insert_index + 1:])
                 else:
                     self.children.pop()
-                    self.children.extend(insertion_result.updated.children)
+                    self.children.extend(insertion_result.record.children)
 
             if len(self.keys) > self._max_keys:
                 mid = len(self.keys) // 2
@@ -626,8 +626,8 @@ class PersBTree:
 
                 result = self._root.append(PersKey(key), value, lock_ctx)
                 if result.is_new_node:
-                    self._root = result.updated
-                    self._page_manager.save_page(result.updated)
+                    self._root = result.record
+                    self._page_manager.save_page(result.record)
                 retry = False
             except SiblingPointerAlreadyLockedException as e:
                 logging.warning("Aborting insertion operation, will retry..., %s", e)

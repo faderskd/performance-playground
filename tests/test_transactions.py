@@ -2,12 +2,15 @@ import abc
 import logging
 import random
 import typing
-from concurrent.futures import ThreadPoolExecutor
+import unittest
+from concurrent import futures
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import List
 from unittest import TestCase
 
-from apps.broker.transactions.database import Database, TxnId
+from apps.broker.transactions.database import Database
+from apps.broker.transactions.transaction import TxnId
 from apps.broker.transactions.record import DbKey, DbRecord, DbRecordDoesNotExists
 from tests.test_utils import random_string, ensure_file_not_exists_in_current_dir
 
@@ -25,7 +28,7 @@ class TxnInsertOp(TxnOperation):
     record: DbRecord
 
     def execute(self, db: Database, txn_id: TxnId):
-        db.txt_insert(txn_id, self.record)
+        db.txn_insert(txn_id, self.record)
 
 
 @dataclass
@@ -41,7 +44,7 @@ class TxnDeleteOp(TxnOperation):
     record: DbRecord
 
     def execute(self, db: Database, txn_id: TxnId):
-        db.txt_delete(txn_id, self.record.key)
+        db.txn_delete(txn_id, self.record.key)
 
 
 @dataclass
@@ -49,7 +52,7 @@ class TxnReadOp(TxnOperation):
     record: DbRecord
 
     def execute(self, db: Database, txn_id: TxnId):
-        db.txt_read(txn_id, self.record.key)
+        db.txn_read(txn_id, self.record.key)
 
 
 @dataclass
@@ -57,7 +60,7 @@ class TxnIncrementIntOp(TxnOperation):
     record: DbRecord
 
     def execute(self, db: Database, txn_id: TxnId):
-        current_val = int(db.txt_read(txn_id, self.record.key).record.value)
+        current_val = int(db.txn_read(txn_id, self.record.key).value)
         current_val += 1
         new_record = DbRecord(self.record.key, current_val)
         db.txn_update(txn_id, new_record)
@@ -69,7 +72,7 @@ class TxnConcatStrOp(TxnOperation):
     add_string: str
 
     def execute(self, db: Database, txn_id: TxnId):
-        current_val = db.txt_read(txn_id, self.record.key).record.value
+        current_val = db.txn_read(txn_id, self.record.key).value
         current_val += self.add_string
         new_record = DbRecord(self.record.key, current_val)
         db.txn_update(txn_id, new_record)
@@ -99,8 +102,28 @@ def threaded_insert(chunk: List[DbRecord], db: Database) -> None:
         transaction.execute(db)
 
 
-class TestDbEngine(TestCase):
+# TODO, handle:
+#   concurrent insert of the same key in transactions
+
+class ThreadingUtilsMixin:
     def setUp(self) -> None:
+        super().setUp()
+        self._executor = futures.ThreadPoolExecutor(max_workers=5)
+
+    def run_on_thread(self, fn: typing.Callable[[...], typing.Any]) -> typing.Callable[[...], futures.Future]:
+        def wrapper(*args, **kwargs) -> futures.Future:
+            return self._executor.submit(fn, *args, **kwargs)
+
+        return wrapper
+
+    @staticmethod
+    def wait_for_all(*future_list: Future):
+        return futures.wait([f for f in future_list])
+
+
+class TestDbEngine(ThreadingUtilsMixin, TestCase):
+    def setUp(self) -> None:
+        super().setUp()
         self.test_db_file_path = ensure_file_not_exists_in_current_dir('db.txt')
 
     def test_should_properly_store_data(self):
@@ -112,8 +135,8 @@ class TestDbEngine(TestCase):
         db.insert(DbRecord(DbKey("myId2"), "World"))
 
         # expect
-        self.assertEqual(db.read(DbKey("myId1")).record.value, "Hello")
-        self.assertEqual(db.read(DbKey("myId2")).record.value, "World")
+        self.assertEqual(db.read(DbKey("myId1")).value, "Hello")
+        self.assertEqual(db.read(DbKey("myId2")).value, "World")
 
     def test_should_properly_store_random_data(self):
         # given
@@ -121,14 +144,14 @@ class TestDbEngine(TestCase):
 
         # when
         indexes = []
-        for i in range(200):
-            s = random_string(random.randint(0, 100))
+        random_data = {random_string(random.randint(0, 1000)) for _ in range(200)}
+        for s in random_data:
             indexes.append(s)
             db.insert(DbRecord(DbKey(f"id{s}"), f"value{s}"))
 
         # expect
         for idx in indexes:
-            self.assertEqual(f"value{idx}", db.read(DbKey(f"id{idx}")).record.value)
+            self.assertEqual(f"value{idx}", db.read(DbKey(f"id{idx}")).value)
 
     def test_should_see_only_committed_changes_for_insert(self):
         # given
@@ -137,7 +160,7 @@ class TestDbEngine(TestCase):
 
         # when
         tx_id = db.begin_transaction()
-        db.txt_insert(tx_id, record)
+        db.txn_insert(tx_id, record)
 
         # then
         with self.assertRaises(DbRecordDoesNotExists):
@@ -147,16 +170,16 @@ class TestDbEngine(TestCase):
         db.txn_commit(tx_id)
 
         # then
-        self.assertEqual(db.read(DbKey("key")).record, record)
+        self.assertEqual(db.read(DbKey("key")), record)
 
-    def test_should_not_see_aborted_transaction_changes(self):
+    def test_should_not_see_aborted_changes_for_insert(self):
         # given
         db = Database(self.test_db_file_path)
         record = DbRecord(DbKey("key"), "value")
 
         # when
         tx_id = db.begin_transaction()
-        db.txt_insert(tx_id, record)
+        db.txn_insert(tx_id, record)
 
         # then
         with self.assertRaises(DbRecordDoesNotExists):
@@ -169,7 +192,163 @@ class TestDbEngine(TestCase):
         with self.assertRaises(DbRecordDoesNotExists):
             db.read(DbKey("key"))
 
-    # TODO: add complex transactions
+    def test_should_see_only_committed_changes_for_update(self):
+        # given
+        db = Database(self.test_db_file_path)
+        before_update = DbRecord(DbKey("key"), "value")
+        db.insert(before_update)
+
+        # when
+        updated = DbRecord(DbKey("key"), "updated")
+        txn_id = db.begin_transaction()
+        db.txn_update(txn_id, updated)
+
+        # then
+        self.assertEqual(db.read(DbKey("key")), before_update)
+
+        # when
+        db.txn_commit(txn_id)
+
+        # then
+        self.assertEqual(db.read(DbKey("key")), updated)
+
+    def test_should_not_see_aborted_changes_for_update(self):
+        # given
+        db = Database(self.test_db_file_path)
+        before_update = DbRecord(DbKey("key"), "value")
+        db.insert(before_update)
+
+        # when
+        updated = DbRecord(DbKey("key"), "updated")
+        txn_id = db.begin_transaction()
+        db.txn_update(txn_id, updated)
+
+        # then
+        self.assertEqual(db.read(DbKey("key")), before_update)
+
+        # when
+        db.txn_abort(txn_id)
+
+        # then
+        self.assertEqual(db.read(DbKey("key")), before_update)
+
+    @unittest.skip("This is for MVCC")
+    def test_should_read_local_data_from_transaction(self):
+        # given
+        db = Database(self.test_db_file_path)
+        before_update = DbRecord(DbKey("key"), "value")
+        db.insert(before_update)
+
+        updated = DbRecord(DbKey("key"), "updated")
+        txn_id = db.begin_transaction()
+        db.txn_update(txn_id, updated)
+
+        # when
+        record_in_txn = db.txn_read(txn_id, DbKey("key"))
+        global_record = db.read(DbKey("key"))
+
+        # then
+        self.assertEqual(record_in_txn, updated)
+        self.assertEqual(global_record, before_update)
+
+    def test_should_not_block_two_transactions_trying_to_read_the_same_record(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+        db.insert(record)
+
+        txn_id_1 = db.begin_transaction()
+        txn_id_2 = db.begin_transaction()
+
+        # when
+        @self.run_on_thread
+        def reader_1() -> DbRecord:
+            return db.txn_read(txn_id_1, record.key)
+
+        @self.run_on_thread
+        def reader_2() -> DbRecord:
+            return db.txn_read(txn_id_2, record.key)
+
+        future_1 = reader_1()
+        future_2 = reader_2()
+
+        # then
+        self.assertEqual(future_1.result(), future_2.result())
+
+        # cleanup
+        db.txn_abort(txn_id_1)
+        db.txn_abort(txn_id_2)
+
+    def test_should_block_writer_transaction_writing_to_already_read_record(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+        db.insert(record)
+
+        txn_id_1 = db.begin_transaction()
+        txn_id_2 = db.begin_transaction()
+
+        # when
+        db.txn_read(txn_id_1, record.key)
+
+        @self.run_on_thread
+        def writer() -> None:
+            return db.txn_update(txn_id_2, record)
+
+        with self.assertRaises(futures.TimeoutError):
+            writer().result(timeout=0.01)
+
+        # cleanup
+        db.txn_abort(txn_id_1)
+        db.txn_abort(txn_id_2)
+
+    def test_should_block_writer_transaction_writing_to_already_written_record(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+        db.insert(record)
+
+        txn_id_1 = db.begin_transaction()
+        txn_id_2 = db.begin_transaction()
+
+        # when
+        db.txn_update(txn_id_1, record)
+
+        @self.run_on_thread
+        def writer() -> None:
+            return db.txn_update(txn_id_2, record)
+
+        with self.assertRaises(futures.TimeoutError):
+            writer().result(timeout=0.01)
+
+        # cleanup
+        db.txn_abort(txn_id_1)
+        db.txn_abort(txn_id_2)
+
+    def test_should_block_reader_transaction_reading_to_already_written_record(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+        db.insert(record)
+
+        txn_id_1 = db.begin_transaction()
+        txn_id_2 = db.begin_transaction()
+
+        # when
+        db.txn_update(txn_id_1, record)
+
+        @self.run_on_thread
+        def reader() -> DbRecord:
+            return db.txn_read(txn_id_2, record.key)
+
+        with self.assertRaises(futures.TimeoutError):
+            reader().result(timeout=0.01)
+
+        # cleanup
+        db.txn_abort(txn_id_1)
+        db.txn_abort(txn_id_2)
+
+    @unittest.skip("This will be separated test")
     def test_should_handle_concurrent_transactions(self):
         # given
         db = Database(self.test_db_file_path)
@@ -191,7 +370,7 @@ class TestDbEngine(TestCase):
 
         # then
         for rec in records_to_insert:
-            self.assertEqual(db.read(rec.key).record.value, rec.value)
+            self.assertEqual(db.read(rec.key).value, rec.value)
 
 
 def divide_into_chunks(records: List[typing.Any], chunks: int) -> List[List[typing.Any]]:

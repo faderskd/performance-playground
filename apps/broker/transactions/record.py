@@ -52,3 +52,8 @@ class PersistedDbRecord:
 class DbRecordDoesNotExists(BaseException):
     def __init__(self, msg: str):
         super().__init__(msg)
+
+
+class DbRecordAlreadyExists(BaseException):
+    def __init__(self, msg: str):
+        super().__init__(msg)
