@@ -22,13 +22,20 @@ class DbRecord:
     key: DbKey
     value: typing.Any
 
-    def to_str(self):
+    def to_str(self) -> str:
         return f"{self.key.to_str()}={self.value}"
+
+    def is_tombstone(self) -> bool:
+        return self.value is None
 
     @classmethod
     def from_str(cls, s: str) -> 'DbRecord':
         data = s.split("=")
         return DbRecord(DbKey(data[0]), data[1])
+
+    @classmethod
+    def tombstone(cls, key: DbKey) -> 'DbRecord':
+        return DbRecord(key, None)
 
 
 @dataclass(frozen=True)

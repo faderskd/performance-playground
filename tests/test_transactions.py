@@ -153,7 +153,20 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         for idx in indexes:
             self.assertEqual(f"value{idx}", db.read(DbKey(f"id{idx}")).value)
 
-    def test_should_see_only_committed_changes_for_insert(self):
+    def test_should_properly_delete_data(self):
+        # given
+        db = Database(self.test_db_file_path)
+        db.insert(DbRecord(DbKey("myId1"), "Hello"))
+        self.assertEqual(db.read(DbKey("myId1")).value, "Hello")
+
+        # when
+        db.delete(DbKey("myId1"))
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.read(DbKey("myId1"))
+
+    def test_should_see_committed_changes_for_insert(self):
         # given
         db = Database(self.test_db_file_path)
         record = DbRecord(DbKey("key"), "value")
@@ -161,16 +174,26 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         # when
         tx_id = db.begin_transaction()
         db.txn_insert(tx_id, record)
-
-        # then
-        with self.assertRaises(DbRecordDoesNotExists):
-            db.read(DbKey("key"))
-
-        # when
         db.txn_commit(tx_id)
 
         # then
         self.assertEqual(db.read(DbKey("key")), record)
+
+    def test_should_see_committed_changes_for_delete(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+        db.insert(record)
+        self.assertEqual(db.read(record.key), record)
+
+        # when
+        tx_id = db.begin_transaction()
+        db.txn_delete(tx_id, record.key)
+        db.txn_commit(tx_id)
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.read(record.key)
 
     def test_should_not_see_aborted_changes_for_insert(self):
         # given
@@ -180,12 +203,6 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         # when
         tx_id = db.begin_transaction()
         db.txn_insert(tx_id, record)
-
-        # then
-        with self.assertRaises(DbRecordDoesNotExists):
-            db.read(DbKey("key"))
-
-        # when
         db.txn_abort(tx_id)
 
         # then
@@ -202,11 +219,6 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         updated = DbRecord(DbKey("key"), "updated")
         txn_id = db.begin_transaction()
         db.txn_update(txn_id, updated)
-
-        # then
-        self.assertEqual(db.read(DbKey("key")), before_update)
-
-        # when
         db.txn_commit(txn_id)
 
         # then
@@ -222,34 +234,25 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         updated = DbRecord(DbKey("key"), "updated")
         txn_id = db.begin_transaction()
         db.txn_update(txn_id, updated)
-
-        # then
-        self.assertEqual(db.read(DbKey("key")), before_update)
-
-        # when
         db.txn_abort(txn_id)
 
         # then
         self.assertEqual(db.read(DbKey("key")), before_update)
 
-    @unittest.skip("This is for MVCC")
-    def test_should_read_local_data_from_transaction(self):
+    def test_should_not_see_aborted_changes_for_delete(self):
         # given
         db = Database(self.test_db_file_path)
-        before_update = DbRecord(DbKey("key"), "value")
-        db.insert(before_update)
-
-        updated = DbRecord(DbKey("key"), "updated")
-        txn_id = db.begin_transaction()
-        db.txn_update(txn_id, updated)
+        record = DbRecord(DbKey("key"), "value")
+        db.insert(record)
+        self.assertEqual(db.read(record.key), record)
 
         # when
-        record_in_txn = db.txn_read(txn_id, DbKey("key"))
-        global_record = db.read(DbKey("key"))
+        tx_id = db.begin_transaction()
+        db.txn_delete(tx_id, record.key)
+        db.txn_abort(tx_id)
 
         # then
-        self.assertEqual(record_in_txn, updated)
-        self.assertEqual(global_record, before_update)
+        self.assertEqual(db.read(record.key), record)
 
     def test_should_not_block_two_transactions_trying_to_read_the_same_record(self):
         # given
@@ -325,7 +328,7 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         db.txn_abort(txn_id_1)
         db.txn_abort(txn_id_2)
 
-    def test_should_block_reader_transaction_reading_to_already_written_record(self):
+    def test_should_block_reader_transaction_reading_already_written_record(self):
         # given
         db = Database(self.test_db_file_path)
         record = DbRecord(DbKey("key"), "value")
@@ -347,6 +350,66 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         # cleanup
         db.txn_abort(txn_id_1)
         db.txn_abort(txn_id_2)
+
+    # TODO: will block, fix lock to not block the same transaction, assume there are called from single thread
+    def test_should_see_all_transaction_operations_locally(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+        updated = DbRecord(DbKey("key"), "updated")
+
+        # when
+        txn_id = db.begin_transaction()
+        db.txn_insert(txn_id, record)
+        record_in_txn = db.txn_read(txn_id, record.key)
+
+        # then
+        self.assertEqual(record_in_txn, record)
+
+        # when
+        db.txn_update(txn_id, updated)
+
+        # then
+        record_in_txn = db.txn_read(txn_id, record.key)
+        self.assertEqual(record_in_txn, updated)
+
+        # when
+        db.txn_delete(txn_id, record.key)
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.txn_read(txn_id, record.key)
+
+    def test_should_raise_error_when_updating_not_existing_record(self):
+        pass
+
+    def test_should_raise_error_when_deleting_not_existing_record(self):
+        pass
+
+    def test_should_raise_error_when_updating_locally_deleted_element(self):
+        pass
+
+    def test_should_raise_error_when_reading_locally_deleted_element(self):
+        pass
+
+    @unittest.skip("This is for MVCC")
+    def test_should_read_local_data_from_transaction(self):
+        # given
+        db = Database(self.test_db_file_path)
+        before_update = DbRecord(DbKey("key"), "value")
+        db.insert(before_update)
+
+        updated = DbRecord(DbKey("key"), "updated")
+        txn_id = db.begin_transaction()
+        db.txn_update(txn_id, updated)
+
+        # when
+        record_in_txn = db.txn_read(txn_id, DbKey("key"))
+        global_record = db.read(DbKey("key"))
+
+        # then
+        self.assertEqual(record_in_txn, updated)
+        self.assertEqual(global_record, before_update)
 
     @unittest.skip("This will be separated test")
     def test_should_handle_concurrent_transactions(self):

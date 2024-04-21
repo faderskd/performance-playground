@@ -26,6 +26,7 @@ class RWLock:
             if not self._read_txns:
                 self._condition.notify_all()
 
+    # TODO: make it smarter so multiple
     def acquire_write(self, txn_id: TxnId):
         with self._condition:
             while self._write_txns or self._read_txns:

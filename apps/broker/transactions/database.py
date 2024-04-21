@@ -7,7 +7,7 @@ from apps.broker.transactions.LockManager import LockManager
 from apps.broker.transactions.record import INT_ENCODING, MAX_RECORD_LENGTH_BYTES, DbKey, DbRecord, PersistedDbRecord, \
     DbRecordDoesNotExists, DbRecordAlreadyExists
 from apps.broker.transactions.transaction import TxnId, TxnIdGenerator, InvalidTransactionId
-from apps.broker.transactions.transaction_metatada import TxnInsertOp, TxnUpdateOp, TxnReadOp, TxnMetadata
+from apps.broker.transactions.transaction_metatada import TxnInsertOp, TxnUpdateOp, TxnReadOp, TxnMetadata, TxnDeleteOp
 
 
 class BufferPool:
@@ -79,16 +79,15 @@ class Database:
         self.txn_commit(txn_id)
 
     def read(self, key: DbKey) -> DbRecord:
-        if key not in self._index:
-            raise DbRecordDoesNotExists(f'Record with key: {key} does not exist')
-        return self._index[key].record
+        txn_id = self.begin_transaction()
+        record = self.txn_read(txn_id, key)
+        self.txn_commit(txn_id)
+        return record
 
     def delete(self, key: DbKey) -> None:
-        if key not in self._index:
-            raise DbRecordDoesNotExists(f'Record with key: {key} does not exist')
-        prev_persisted_record = self._index[key]
-        del self._index[key]
-        self._buff_pool.mark_as_garbage(prev_persisted_record)
+        txn_id = self.begin_transaction()
+        self.txn_delete(txn_id, key)
+        self.txn_commit(txn_id)
 
     def close(self):
         self._buff_pool.close()
@@ -98,23 +97,6 @@ class Database:
             txn_id = self._txn_generator.generate()
             self._pending_transactions[txn_id] = TxnMetadata()
             return txn_id
-
-    def txn_insert(self, txn_id: TxnId, record: DbRecord) -> None:
-        with self._internal_lock:  # TODO: is it necessary ?
-            self._ensure_transaction_exists(txn_id)
-            self._pending_transactions[txn_id].add_operation(TxnInsertOp(record, txn_id, lock=None))
-
-    def txn_update(self, txn_id: TxnId, record: DbRecord) -> None:
-        with self._internal_lock:
-            self._ensure_transaction_exists(txn_id)
-            lock = self._lock_manager.get_rw_lock(record.key)
-        # can block, so we have to do it outside of internal lock
-        lock.acquire_write(txn_id)
-        with self._internal_lock:
-            self._pending_transactions[txn_id].add_operation(TxnUpdateOp(record, txn_id, lock))
-
-    def txn_delete(self, txn_id: TxnId, key: DbKey) -> None:
-        self.delete(key)
 
     def txn_read(self, txn_id: TxnId, key: DbKey) -> DbRecord:
         self._ensure_transaction_exists(txn_id)
@@ -130,6 +112,46 @@ class Database:
         with self._internal_lock:
             return self._pending_transactions[txn_id].add_operation(TxnReadOp(existing, txn_id, lock))
 
+    def txn_insert(self, txn_id: TxnId, record: DbRecord) -> None:
+        with self._internal_lock:
+            self._ensure_transaction_exists(txn_id)
+            lock = self._lock_manager.get_rw_lock(record.key)
+        # can block, so we have to do it outside of internal lock
+        lock.acquire_write(txn_id)
+        with self._internal_lock:
+            txn_metadata = self._pending_transactions[txn_id]
+            if txn_metadata.contains_key(record.key):
+                raise DbRecordAlreadyExists(f'Record with key: {record.key} already exists')
+        txn_metadata.add_operation(TxnInsertOp(record, txn_id, lock))
+
+    def txn_update(self, txn_id: TxnId, record: DbRecord) -> None:
+        with self._internal_lock:
+            self._ensure_transaction_exists(txn_id)
+            lock = self._lock_manager.get_rw_lock(record.key)
+        # can block, so we have to do it outside of internal lock
+        lock.acquire_write(txn_id)
+        try:
+            self._index[record.key].record
+        except KeyError:
+            lock.release_write(txn_id)
+            raise DbRecordDoesNotExists(f'Record with key: {record.key} does not exist')
+        with self._internal_lock:
+            self._pending_transactions[txn_id].add_operation(TxnUpdateOp(record, txn_id, lock))
+
+    def txn_delete(self, txn_id: TxnId, key: DbKey) -> None:
+        with self._internal_lock:
+            self._ensure_transaction_exists(txn_id)
+            lock = self._lock_manager.get_rw_lock(key)
+        # can block, so we have to do it outside of internal lock
+        lock.acquire_write(txn_id)
+        try:
+            existing = self._index[key].record
+        except KeyError:
+            lock.release_write(txn_id)
+            raise DbRecordDoesNotExists(f'Record with key: {key} does not exist')
+        with self._internal_lock:
+            self._pending_transactions[txn_id].add_operation(TxnDeleteOp(existing, txn_id, lock))
+
     def txn_abort(self, txn_id: TxnId) -> None:
         self._ensure_transaction_exists(txn_id)
         for op in self._pending_transactions[txn_id].operations:
@@ -143,6 +165,8 @@ class Database:
                 self._insert(op.record)
             if isinstance(op, TxnUpdateOp):
                 self._update(op.record)
+            if isinstance(op, TxnDeleteOp):
+                self._delete(op.record.key)
         for op in self._pending_transactions[txn_id].operations:
             op.release_lock()
         del self._pending_transactions[txn_id]
@@ -162,6 +186,10 @@ class Database:
         self._index[record.key] = new_persisted_record
         self._buff_pool.mark_as_garbage(prev_persisted_record)
         return new_persisted_record
+
+    def _delete(self, key: DbKey) -> None:
+        prev_persisted_record = self._index.pop(key)
+        self._buff_pool.mark_as_garbage(prev_persisted_record)
 
     def _ensure_record_does_not_exist(self, record):
         if record.key in self._index:
