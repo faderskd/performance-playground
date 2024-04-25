@@ -42,16 +42,14 @@ class TxnMetadata:
         self._operations: typing.List[TxnOp] = []
         self._local_index: typing.Dict[DbKey, DbRecord] = {}
 
-    def add_operation(self, txn_op: TxnOp) -> typing.Optional[DbRecord]:
+    def add_operation(self, txn_op: TxnOp) -> None:
         self._operations.append(txn_op)
         if isinstance(txn_op, TxnInsertOp):
             self._local_index[txn_op.record.key] = txn_op.record
         elif isinstance(txn_op, TxnUpdateOp):
             self._local_index[txn_op.record.key] = txn_op.record
         elif isinstance(txn_op, TxnReadOp):
-            if txn_op.record.key in self._local_index:
-                return self._local_index[txn_op.record.key]
-            return txn_op.record
+            pass
         elif isinstance(txn_op, TxnDeleteOp):
             self._local_index[txn_op.record.key] = DbRecord.tombstone(txn_op.record.key)
 
@@ -59,5 +57,8 @@ class TxnMetadata:
     def operations(self) -> typing.List[TxnOp]:
         return self._operations
 
-    def contains_key(self, key) -> bool:
+    def contains_active_key(self, key: DbKey) -> bool:
         return not self._local_index.get(key, DbRecord.tombstone(key)).is_tombstone()
+
+    def get_or_none(self, key: DbKey) -> typing.Optional[DbRecord]:
+        return self._local_index.get(key, None)

@@ -9,35 +9,43 @@ class RWLock:
     def __init__(self):
         self.lock = threading.Lock()
         self._condition = threading.Condition()
-        self._read_txns: typing.Set[TxnId] = set()
-        self._write_txns: typing.Set[TxnId] = set()
+        self._read_txns: typing.Dict[TxnId, int] = {}
+        self._write_txns: typing.Dict[TxnId, int] = {}
 
     def acquire_read(self, txn_id: TxnId):
         with self._condition:
-            while self._write_txns:
+            while txn_id not in self._read_txns and txn_id not in self._write_txns and self._write_txns:
                 self._condition.wait()
-            self._read_txns.add(txn_id)
+            if txn_id not in self._read_txns:
+                self._read_txns[txn_id] = 0
+            self._read_txns[txn_id] += 1
 
     def release_read(self, txn_id: TxnId):
         with self._condition:
             if txn_id not in self._read_txns:
                 raise LockNotAcquiredException(f"Read lock not hold by transaction {txn_id}")
-            self._read_txns.remove(txn_id)
+            self._read_txns[txn_id] -= 1
+            if self._read_txns[txn_id] == 0:
+                del self._read_txns[txn_id]
             if not self._read_txns:
                 self._condition.notify_all()
 
-    # TODO: make it smarter so multiple
     def acquire_write(self, txn_id: TxnId):
         with self._condition:
-            while self._write_txns or self._read_txns:
+            while txn_id not in self._read_txns and txn_id not in self._write_txns and (
+                self._write_txns or self._read_txns):
                 self._condition.wait()
-            self._write_txns.add(txn_id)
+            if txn_id not in self._write_txns:
+                self._write_txns[txn_id] = 0
+            self._write_txns[txn_id] += 1
 
     def release_write(self, txn_id: TxnId):
         with self._condition:
             if txn_id not in self._write_txns:
                 raise LockNotAcquiredException(f"Write lock not hold by current thread {txn_id}")
-            self._write_txns.remove(txn_id)
+            self._write_txns[txn_id] -= 1
+            if self._write_txns[txn_id] == 0:
+                del self._write_txns[txn_id]
             self._condition.notify_all()
 
 

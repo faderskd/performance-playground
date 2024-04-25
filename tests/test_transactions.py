@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import List
 from unittest import TestCase
 
+from apps.broker.transactions import record
 from apps.broker.transactions.database import Database
 from apps.broker.transactions.transaction import TxnId
 from apps.broker.transactions.record import DbKey, DbRecord, DbRecordDoesNotExists
@@ -381,16 +382,54 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
             db.txn_read(txn_id, record.key)
 
     def test_should_raise_error_when_updating_not_existing_record(self):
-        pass
+        # given
+        db = Database(self.test_db_file_path)
+
+        # when
+        txn_id = db.begin_transaction()
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.txn_update(txn_id, DbRecord(DbKey("key"), "value"))
 
     def test_should_raise_error_when_deleting_not_existing_record(self):
-        pass
+        # given
+        db = Database(self.test_db_file_path)
+
+        # when
+        txn_id = db.begin_transaction()
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.txn_delete(txn_id, DbKey("key"))
 
     def test_should_raise_error_when_updating_locally_deleted_element(self):
-        pass
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+        db.insert(record)
+
+        # when
+        txn_id = db.begin_transaction()
+        db.txn_delete(txn_id, record.key)
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.txn_update(txn_id, DbRecord(DbKey("key"), "updated"))
 
     def test_should_raise_error_when_reading_locally_deleted_element(self):
-        pass
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+        db.insert(record)
+
+        # when
+        txn_id = db.begin_transaction()
+        db.txn_delete(txn_id, record.key)
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.txn_read(txn_id, record.key)
 
     @unittest.skip("This is for MVCC")
     def test_should_read_local_data_from_transaction(self):
