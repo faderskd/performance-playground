@@ -14,7 +14,8 @@ class RWLock:
 
     def acquire_read(self, txn_id: TxnId):
         with self._condition:
-            while txn_id not in self._read_txns and txn_id not in self._write_txns and self._write_txns:
+            while not ((len(self._write_txns) == 1 and txn_id in self._write_txns) or
+                       not self._write_txns):
                 self._condition.wait()
             if txn_id not in self._read_txns:
                 self._read_txns[txn_id] = 0
@@ -32,8 +33,9 @@ class RWLock:
 
     def acquire_write(self, txn_id: TxnId):
         with self._condition:
-            while txn_id not in self._read_txns and txn_id not in self._write_txns and (
-                self._write_txns or self._read_txns):
+            while not ((len(self._read_txns) == 1 and txn_id in self._read_txns) or
+                       (len(self._write_txns) == 1 and txn_id in self._write_txns) or
+                       (not self._read_txns and not self._write_txns)):
                 self._condition.wait()
             if txn_id not in self._write_txns:
                 self._write_txns[txn_id] = 0
@@ -59,38 +61,37 @@ class LockManager:
             self._locks[key] = RWLock()
         return self._locks[key]
 
+    def detect_deadlocks(self) -> typing.List[TxnId]:
+        """
+        Returns a list of transactions that should be killed
+        T1           T2          T3
+        R_A          R_B        R_C
+        W_B          W_C        W_A
+
+
+        index = {
+            T1: ([opearation_rows], [transaction_rows]),
+            T2: ([opearation_rows], [transaction_rows]),
+            ...
+        }
+
+        operations
+        {
+         A: R_T1, W_T3
+         B: R_T2, W_T1
+         C: R_T3, W_T2
+        }
+
+        transactions
+        {
+          T1 -> T2
+          T2 -> T3
+          T3 -> T1
+        }
+        """
+        pass
+
 
 class LockNotAcquiredException(Exception):
     def __init__(self, msg: str) -> None:
         super().__init__(msg)
-
-# lock = RWLock()
-#
-#
-# def read():
-#     lock.acquire_read()
-#     for i in range(5):
-#         sleep(1)
-#         print(f"read: {current_thread()} -> {i}")
-#     lock.release_read()
-#
-#
-# def write():
-#     lock.acquire_write()
-#     for i in range(5):
-#         sleep(1)
-#         print(f"write: {current_thread()} -> {i}")
-#     lock.release_write()
-#
-#
-# r_thread1 = threading.Thread(target=read)
-# r_thread2 = threading.Thread(target=read)
-# w_thread = threading.Thread(target=write)
-#
-# r_thread1.start()
-# r_thread2.start()
-# w_thread.start()
-#
-# r_thread1.join()
-# r_thread2.join()
-# w_thread.join()

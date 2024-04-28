@@ -1,6 +1,5 @@
 import abc
 import logging
-import random
 import typing
 import unittest
 from concurrent import futures
@@ -9,10 +8,9 @@ from dataclasses import dataclass
 from typing import List
 from unittest import TestCase
 
-from apps.broker.transactions import record
 from apps.broker.transactions.database import Database
 from apps.broker.transactions.transaction import TxnId
-from apps.broker.transactions.record import DbKey, DbRecord, DbRecordDoesNotExists
+from apps.broker.transactions.record import DbKey, DbRecord, DbRecordDoesNotExists, DbRecordAlreadyExists
 from tests.test_utils import random_string, ensure_file_not_exists_in_current_dir
 
 logger = logging.getLogger(__name__)
@@ -122,50 +120,10 @@ class ThreadingUtilsMixin:
         return futures.wait([f for f in future_list])
 
 
-class TestDbEngine(ThreadingUtilsMixin, TestCase):
+class TestTransactionsEngine(ThreadingUtilsMixin, TestCase):
     def setUp(self) -> None:
         super().setUp()
         self.test_db_file_path = ensure_file_not_exists_in_current_dir('db.txt')
-
-    def test_should_properly_store_data(self):
-        # given
-        db = Database(self.test_db_file_path)
-
-        # when
-        db.insert(DbRecord(DbKey("myId1"), "Hello"))
-        db.insert(DbRecord(DbKey("myId2"), "World"))
-
-        # expect
-        self.assertEqual(db.read(DbKey("myId1")).value, "Hello")
-        self.assertEqual(db.read(DbKey("myId2")).value, "World")
-
-    def test_should_properly_store_random_data(self):
-        # given
-        db = Database(self.test_db_file_path)
-
-        # when
-        indexes = []
-        random_data = {random_string(random.randint(0, 1000)) for _ in range(200)}
-        for s in random_data:
-            indexes.append(s)
-            db.insert(DbRecord(DbKey(f"id{s}"), f"value{s}"))
-
-        # expect
-        for idx in indexes:
-            self.assertEqual(f"value{idx}", db.read(DbKey(f"id{idx}")).value)
-
-    def test_should_properly_delete_data(self):
-        # given
-        db = Database(self.test_db_file_path)
-        db.insert(DbRecord(DbKey("myId1"), "Hello"))
-        self.assertEqual(db.read(DbKey("myId1")).value, "Hello")
-
-        # when
-        db.delete(DbKey("myId1"))
-
-        # then
-        with self.assertRaises(DbRecordDoesNotExists):
-            db.read(DbKey("myId1"))
 
     def test_should_see_committed_changes_for_insert(self):
         # given
@@ -196,20 +154,6 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         with self.assertRaises(DbRecordDoesNotExists):
             db.read(record.key)
 
-    def test_should_not_see_aborted_changes_for_insert(self):
-        # given
-        db = Database(self.test_db_file_path)
-        record = DbRecord(DbKey("key"), "value")
-
-        # when
-        tx_id = db.begin_transaction()
-        db.txn_insert(tx_id, record)
-        db.txn_abort(tx_id)
-
-        # then
-        with self.assertRaises(DbRecordDoesNotExists):
-            db.read(DbKey("key"))
-
     def test_should_see_only_committed_changes_for_update(self):
         # given
         db = Database(self.test_db_file_path)
@@ -224,6 +168,20 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
 
         # then
         self.assertEqual(db.read(DbKey("key")), updated)
+
+    def test_should_not_see_aborted_changes_for_insert(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+
+        # when
+        tx_id = db.begin_transaction()
+        db.txn_insert(tx_id, record)
+        db.txn_abort(tx_id)
+
+        # then
+        with self.assertRaises(DbRecordDoesNotExists):
+            db.read(DbKey("key"))
 
     def test_should_not_see_aborted_changes_for_update(self):
         # given
@@ -352,7 +310,6 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         db.txn_abort(txn_id_1)
         db.txn_abort(txn_id_2)
 
-    # TODO: will block, fix lock to not block the same transaction, assume there are called from single thread
     def test_should_see_all_transaction_operations_locally(self):
         # given
         db = Database(self.test_db_file_path)
@@ -430,6 +387,84 @@ class TestDbEngine(ThreadingUtilsMixin, TestCase):
         # then
         with self.assertRaises(DbRecordDoesNotExists):
             db.txn_read(txn_id, record.key)
+
+    def test_should_raise_error_when_inserting_already_existing_element(self):
+        # given
+        db = Database(self.test_db_file_path)
+        record = DbRecord(DbKey("key"), "value")
+        db.insert(record)
+
+        # when
+        txn_id = db.begin_transaction()
+
+        # then
+        with self.assertRaises(DbRecordAlreadyExists):
+            db.txn_insert(txn_id, record)
+
+    def test_should_detect_deadlock(self):
+        """
+        T1      |   T2
+        read A  |   read A
+        write A |   write A
+        """
+        # given
+        A_key = DbKey("A")
+        db = Database(self.test_db_file_path)
+        db.insert(DbRecord(A_key, 1))
+
+        # when
+        t1 = db.begin_transaction()
+        t2 = db.begin_transaction()
+
+        db.txn_read(t1, A_key)
+        db.txn_read(t2, A_key)
+
+        db.txn_update(t1, DbRecord(A_key, 2))
+
+    @unittest.skip("activate when detecting deadlock")
+    def test_should_serialize_two_concurrent_transactions(self):
+        """
+        A = 1000
+        B = 1000
+
+        T1            |    T2
+        BEGIN         |    BEGIN
+        A = A - 100   |    A = A * 1.2
+        B = B + 100   |    B = B * 1.2
+        COMMIT        |    COMMIT
+                      |
+        RESULT        |    RESULT
+        A + B = 2000  |    2000 * 1.2 = 2400
+
+        """
+        # given
+        A_key = DbKey("A")
+        B_key = DbKey("B")
+        db = Database(self.test_db_file_path)
+        db.insert(DbRecord(A_key, 1000))
+        db.insert(DbRecord(B_key, 1000))
+
+        # when
+        t1 = db.begin_transaction()
+        t2 = db.begin_transaction()
+
+        a_t1 = db.txn_read(t1, A_key)
+        b_t1 = db.txn_read(t1, B_key)
+
+        a_t2 = db.txn_read(t2, A_key)
+        b_t2 = db.txn_read(t2, B_key)
+
+        db.txn_update(t1, DbRecord(A_key, a_t1.value - 100))
+        db.txn_update(t2, DbRecord(A_key, a_t2.value * 1.2))
+        db.txn_update(t1, DbRecord(B_key, b_t1.value + 100))
+        db.txn_update(t2, DbRecord(B_key, b_t2.value * 1.2))
+
+        db.txn_commit(t1)
+        db.txn_commit(t2)
+
+        # then
+        self.assertEqual(db.read(A_key).value, 1080)  # 1.2 * 900
+        self.assertEqual(db.read(B_key).value, 1320)  # 1.2 * 1100
 
     @unittest.skip("This is for MVCC")
     def test_should_read_local_data_from_transaction(self):

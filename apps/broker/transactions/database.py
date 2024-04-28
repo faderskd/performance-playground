@@ -219,5 +219,11 @@ class Database:
         if key not in self._index:
             raise DbRecordDoesNotExists(f'Record with key: {key} does not exist')
 
+    # should run in background thread
+    def _kill_deadlock_transactions(self):
+        with self._internal_lock:
+            for txn_id in self._lock_manager.detect_deadlocks():
+                self.txn_abort(txn_id)
+
 # TODO:
 #   1. Make index concurrent without a single lock ?
