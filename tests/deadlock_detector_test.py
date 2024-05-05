@@ -243,9 +243,30 @@ class DeadlockDetectorTest(unittest.TestCase):
         self.assertEqual(deadlocks[1], {t5, t6, t7, t8})
 
         # when
-        d.remove_txn(t2)
+        d.remove_txn(t2, {key2, key3, key1})
 
         deadlocks = d.detect()
 
         self.assertEqual(len(deadlocks), 1)
         self.assertEqual(deadlocks[0], {t5, t6, t7, t8})
+
+        # when
+        d.remove_txn(t7, {key7, key8})
+
+        deadlocks = d.detect()
+
+        self.assertEqual(len(deadlocks), 0)
+
+    def test_should_not_detect_deadlocks_for_single_transaction(self):
+        # given
+        d = DeadlockDetector()
+        t1 = TxnId(1)
+
+        d.add_read(t1, DbKey("key1"))
+        d.add_write(t1, DbKey("key1"))
+
+        # when
+        deadlocks = d.detect()
+
+        # then
+        self.assertEqual(len(deadlocks), 0)

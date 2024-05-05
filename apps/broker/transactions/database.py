@@ -223,8 +223,8 @@ class Database:
         self._ensure_transaction_exists(txn_id)
         for op in self._pending_transactions[txn_id].operations:
             op.release_lock()
-        del self._pending_transactions[txn_id]
-        self._deadlock_detector.remove(txn_id)
+        txn_metadata = self._pending_transactions.pop(txn_id)
+        self._deadlock_detector.remove_txn(txn_id, txn_metadata.txn_keys())
 
     def _txn_commit(self, txn_id):
         self._ensure_transaction_exists(txn_id)
@@ -237,8 +237,8 @@ class Database:
                 self._delete(op.record.key)
         for op in self._pending_transactions[txn_id].operations:
             op.release_lock()
-        del self._pending_transactions[txn_id]
-        self._deadlock_detector.remove(txn_id)
+        txn_metadata = self._pending_transactions.pop(txn_id)
+        self._deadlock_detector.remove_txn(txn_id, txn_metadata.txn_keys())
 
 # TODO:
 #   1. Make index concurrent without a single lock ?

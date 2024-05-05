@@ -62,3 +62,6 @@ class TxnMetadata:
 
     def get_or_none(self, key: DbKey) -> typing.Optional[DbRecord]:
         return self._local_index.get(key, None)
+
+    def txn_keys(self) -> typing.Set[DbKey]:
+        return {op.record.key for op in self._operations}
