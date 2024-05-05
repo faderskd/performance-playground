@@ -61,36 +61,6 @@ class LockManager:
             self._locks[key] = RWLock()
         return self._locks[key]
 
-    def detect_deadlocks(self) -> typing.List[TxnId]:
-        """
-        Returns a list of transactions that should be killed
-        T1           T2          T3
-        R_A          R_B        R_C
-        W_B          W_C        W_A
-
-
-        index = {
-            T1: ([opearation_rows], [transaction_rows]),
-            T2: ([opearation_rows], [transaction_rows]),
-            ...
-        }
-
-        operations
-        {
-         A: R_T1, W_T3
-         B: R_T2, W_T1
-         C: R_T3, W_T2
-        }
-
-        transactions
-        {
-          T1 -> T2
-          T2 -> T3
-          T3 -> T1
-        }
-        """
-        pass
-
 
 class LockNotAcquiredException(Exception):
     def __init__(self, msg: str) -> None:
