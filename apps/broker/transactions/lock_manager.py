@@ -1,5 +1,7 @@
+import enum
 import threading
 import typing
+from collections import defaultdict
 
 from apps.broker.transactions.transaction import TxnId
 from apps.broker.transactions.record import DbKey
@@ -24,12 +26,11 @@ class RWLock:
     def release_read(self, txn_id: TxnId):
         with self._condition:
             if txn_id not in self._read_txns:
-                raise LockNotAcquiredException(f"Read lock not hold by transaction {txn_id}")
+                return
             self._read_txns[txn_id] -= 1
             if self._read_txns[txn_id] == 0:
                 del self._read_txns[txn_id]
-            if not self._read_txns:
-                self._condition.notify_all()
+            self._condition.notify_all()
 
     def acquire_write(self, txn_id: TxnId):
         with self._condition:
@@ -44,23 +45,55 @@ class RWLock:
     def release_write(self, txn_id: TxnId):
         with self._condition:
             if txn_id not in self._write_txns:
-                raise LockNotAcquiredException(f"Write lock not hold by current thread {txn_id}")
+                return
             self._write_txns[txn_id] -= 1
             if self._write_txns[txn_id] == 0:
                 del self._write_txns[txn_id]
             self._condition.notify_all()
 
 
+class OpType(enum.Enum):
+    READ = 0
+    WRITE = 1
+
+
+class LockAcquisition:
+    def __init__(self, rw_lock: RWLock, op: OpType, txn_id: TxnId):
+        self.rw_lock = rw_lock
+        self.op = op
+        self.txn_id = txn_id
+
+    def release(self):
+        if self.op == OpType.READ:
+            self.rw_lock.release_read(self.txn_id)
+        else:
+            self.rw_lock.release_write(self.txn_id)
+
+
 class LockManager:
     def __init__(self):
         self._locks: typing.Dict[DbKey, RWLock] = {}
+        self._txn_locks: typing.Dict[TxnId, typing.List[LockAcquisition]] = defaultdict(list)
 
-    def get_rw_lock(self, key: DbKey):
+    def read_lock(self, txn_id: TxnId, key: DbKey) -> RWLock:
+        lock = self._get_rw_lock(key)
+        self._txn_locks[txn_id].append(LockAcquisition(lock, OpType.READ, txn_id))
+        return lock
+
+    def write_lock(self, txn_id: TxnId, key: DbKey) -> RWLock:
+        lock = self._get_rw_lock(key)
+        self._txn_locks[txn_id].append(LockAcquisition(lock, OpType.WRITE, txn_id))
+        return lock
+
+    def _get_rw_lock(self, key: DbKey):
         # TODO: make cleaning when lock not needed anymore
         if key not in self._locks:
             self._locks[key] = RWLock()
         return self._locks[key]
 
+    def release_locks_for_txn(self, txn_id) -> typing.List[LockAcquisition]:
+        for lock in self._txn_locks[txn_id]:
+            lock.release()
 
 class LockNotAcquiredException(Exception):
     def __init__(self, msg: str) -> None:

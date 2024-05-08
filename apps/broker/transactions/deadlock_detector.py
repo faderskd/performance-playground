@@ -57,7 +57,7 @@ class DeadlockDetector:
         self._operations[key].append(TxnOperation(OpType.WRITE, txn_id))
 
     def remove_txn(self, txn_id: TxnId, keys: Set[DbKey]):
-        self._graph.pop(txn_id)
+        self._graph.pop(txn_id, None)
         for key in keys:
             self._operations[key] = [op for op in self._operations[key] if op.txn_id in self._graph]
 

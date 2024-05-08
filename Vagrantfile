@@ -1,7 +1,7 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
-vagrant_name = "queuestd-performance-playground"
+vagrant_name = "performance-playground"
 
 Vagrant.configure("2") do |config|
   config.vm.box = "ubuntu/jammy64"
@@ -11,7 +11,7 @@ Vagrant.configure("2") do |config|
   config.vm.network :forwarded_port, guest: 11211, host: 11211
 
   config.vm.provision "shell", path: "vagrant/install-tools.sh"
-  config.vm.provision "file", source: "/Users/daniel.faderski/Desktop/Wlasne/queuestd", destination: "/home/vagrant/queuestd"
+  config.vm.provision "file", source: "/Users/daniel.faderski/Desktop/Wlasne/performance-playground", destination: "/home/vagrant/performance-playground"
 
   config.vm.provider :virtualbox do |vb|
     vb.customize ["modifyvm", :id, "--memory", "4096"]

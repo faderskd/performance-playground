@@ -1,7 +1,7 @@
 import abc
 import typing
 
-from apps.broker.transactions.LockManager import RWLock
+from apps.broker.transactions.lock_manager import RWLock
 from apps.broker.transactions.record import DbRecord, DbKey
 from apps.broker.transactions.transaction import TxnId
 
@@ -12,29 +12,21 @@ class TxnOp(abc.ABC):
         self.txn_id = txn_id
         self._lock = lock
 
-    @abc.abstractmethod
-    def release_lock(self):
-        pass
-
 
 class TxnInsertOp(TxnOp):
-    def release_lock(self):
-        self._lock.release_write(self.txn_id)
+    pass
 
 
 class TxnUpdateOp(TxnOp):
-    def release_lock(self):
-        self._lock.release_write(self.txn_id)
+    pass
 
 
 class TxnReadOp(TxnOp):
-    def release_lock(self):
-        self._lock.release_read(self.txn_id)
+    pass
 
 
 class TxnDeleteOp(TxnOp):
-    def release_lock(self):
-        self._lock.release_write(self.txn_id)
+    pass
 
 
 class TxnMetadata:

@@ -1,9 +1,10 @@
 import io
 import os
 import threading
+import time
 import typing
 
-from apps.broker.transactions.LockManager import LockManager
+from apps.broker.transactions.lock_manager import LockManager
 from apps.broker.transactions.deadlock_detector import DeadlockDetector
 from apps.broker.transactions.record import INT_ENCODING, MAX_RECORD_LENGTH_BYTES, DbKey, DbRecord, PersistedDbRecord, \
     DbRecordDoesNotExists, DbRecordAlreadyExists
@@ -56,6 +57,9 @@ class BufferPool:
 
 
 class Database:
+    DEADLOCK_DETECTING_INTERVAL_SECONDS = 0.01
+    WAIT_UNTIL_BACKGROUND_THREAD_STOPPED_INTERVAL_SECONDS = 0.2
+
     def __init__(self, file_path=None):
         if not file_path:
             file_path = os.path.join(os.path.dirname(__file__), "db.txt")
@@ -66,6 +70,8 @@ class Database:
         self._lock_manager: LockManager = LockManager()
         self._deadlock_detector = DeadlockDetector()
         self._internal_lock = threading.Lock()
+        self._background_thread = threading.Thread(target=self._periodically_kill_deadlock_transactions, daemon=True)
+        self._closed = False
 
     def insert(self, record: DbRecord):
         txn_id = self.begin_transaction()
@@ -88,9 +94,6 @@ class Database:
         self.txn_delete(txn_id, key)
         self.txn_commit(txn_id)
 
-    def close(self):
-        self._buff_pool.close()
-
     def begin_transaction(self) -> TxnId:
         with self._internal_lock:
             txn_id = self._txn_generator.generate()
@@ -100,7 +103,9 @@ class Database:
     def txn_read(self, txn_id: TxnId, key: DbKey) -> DbRecord:
         with self._internal_lock:
             txn_metadata = self._ensure_transaction_exists(txn_id)
-            lock = self._lock_manager.get_rw_lock(key)
+            lock = self._lock_manager.read_lock(txn_id, key)
+            self._deadlock_detector.add_read(txn_id, key)
+
         # can block, so we have to do it outside of internal lock
         lock.acquire_read(txn_id)
         with self._internal_lock:
@@ -111,11 +116,9 @@ class Database:
                 raise DbRecordDoesNotExists(f'Record with key: {key} does not exist')
             elif local_record:
                 self._pending_transactions[txn_id].add_operation(TxnReadOp(local_record, txn_id, lock))
-                self._deadlock_detector.add_read(txn_id, key)
                 return local_record
             elif global_record := self._index.get(key, None):
                 self._pending_transactions[txn_id].add_operation(TxnReadOp(global_record.record, txn_id, lock))
-                self._deadlock_detector.add_read(txn_id, key)
                 return global_record.record
             else:
                 lock.release_read(txn_id)
@@ -124,7 +127,9 @@ class Database:
     def txn_insert(self, txn_id: TxnId, record: DbRecord) -> None:
         with self._internal_lock:
             self._ensure_transaction_exists(txn_id)
-            lock = self._lock_manager.get_rw_lock(record.key)
+            lock = self._lock_manager.write_lock(txn_id, record.key)
+            self._deadlock_detector.add_write(txn_id, record.key)
+
         # can block, so we have to do it outside of internal lock
         lock.acquire_write(txn_id)
         with self._internal_lock:
@@ -132,12 +137,13 @@ class Database:
             if record.key in self._index or txn_metadata.contains_active_key(record.key):
                 raise DbRecordAlreadyExists(f'Record with key: {record.key} already exists')
             txn_metadata.add_operation(TxnInsertOp(record, txn_id, lock))
-            self._deadlock_detector.add_write(txn_id, record.key)
 
     def txn_update(self, txn_id: TxnId, record: DbRecord) -> None:
         with self._internal_lock:
             txn_metadata = self._ensure_transaction_exists(txn_id)
-            lock = self._lock_manager.get_rw_lock(record.key)
+            lock = self._lock_manager.write_lock(txn_id, record.key)
+            self._deadlock_detector.add_write(txn_id, record.key)
+
         # can block, so we have to do it outside of internal lock
         lock.acquire_write(txn_id)
         with self._internal_lock:
@@ -148,7 +154,6 @@ class Database:
                 raise DbRecordDoesNotExists(f'Record with key: {record.key} does not exist')
             elif local_record or self._index.get(record.key, None):
                 self._pending_transactions[txn_id].add_operation(TxnUpdateOp(record, txn_id, lock))
-                self._deadlock_detector.add_write(txn_id, record.key)
             else:
                 lock.release_write(txn_id)
                 raise DbRecordDoesNotExists(f'Record with key: {record.key} does not exist')
@@ -156,7 +161,9 @@ class Database:
     def txn_delete(self, txn_id: TxnId, key: DbKey) -> None:
         with self._internal_lock:
             txn_metadata = self._ensure_transaction_exists(txn_id)
-            lock = self._lock_manager.get_rw_lock(key)
+            lock = self._lock_manager.write_lock(txn_id, key)
+            self._deadlock_detector.add_write(txn_id, key)
+
         # can block, so we have to do it outside of internal lock
         lock.acquire_write(txn_id)
         with self._internal_lock:
@@ -167,10 +174,8 @@ class Database:
                 raise DbRecordDoesNotExists(f'Record with key: {key} does not exist')
             elif local_record:
                 self._pending_transactions[txn_id].add_operation(TxnDeleteOp(local_record, txn_id, lock))
-                self._deadlock_detector.add_write(txn_id, key)
             elif global_record := self._index.get(key, None):
                 self._pending_transactions[txn_id].add_operation(TxnDeleteOp(global_record.record, txn_id, lock))
-                self._deadlock_detector.add_write(txn_id, key)
             else:
                 lock.release_write(txn_id)
                 raise DbRecordDoesNotExists(f'Record with key: {key} does not exist')
@@ -183,7 +188,18 @@ class Database:
         with self._internal_lock:
             self._txn_commit(txn_id)
 
-    def _ensure_transaction_exists(self, txn_id) -> TxnMetadata:
+    def start_background_processes(self):
+        self._background_thread.start()
+
+    def close(self):
+        self._closed = True
+        self._buff_pool.close()
+        self.stop_background_processes()
+
+    def stop_background_processes(self):
+        self._background_thread.join(self.WAIT_UNTIL_BACKGROUND_THREAD_STOPPED_INTERVAL_SECONDS)
+
+    def _ensure_transaction_exists(self, txn_id: TxnId) -> TxnMetadata:
         txn_metadata = self._pending_transactions.get(txn_id)
         if not txn_metadata:
             raise InvalidTransactionId(f"There is no pending transaction for tx_id: {txn_id}")
@@ -205,7 +221,7 @@ class Database:
         prev_persisted_record = self._index.pop(key)
         self._buff_pool.mark_as_garbage(prev_persisted_record)
 
-    def _ensure_record_does_not_exist(self, record):
+    def _ensure_record_does_not_exist(self, record: DbRecord):
         if record.key in self._index:
             raise DbRecordAlreadyExists(f'Record with key: {record.key} already exists')
 
@@ -213,20 +229,20 @@ class Database:
         if key not in self._index:
             raise DbRecordDoesNotExists(f'Record with key: {key} does not exist')
 
-    # should run in background thread
-    def _kill_deadlock_transactions(self):
-        with self._internal_lock:
-            for txn_id in self._deadlock_detector.detect():
-                self._txn_abort(txn_id)
+    def _periodically_kill_deadlock_transactions(self):
+        while not self._closed:
+            with self._internal_lock:
+                for txn_set in self._deadlock_detector.detect():
+                    self._txn_abort(txn_set.pop())
+            time.sleep(self.DEADLOCK_DETECTING_INTERVAL_SECONDS)
 
-    def _txn_abort(self, txn_id):
+    def _txn_abort(self, txn_id: TxnId):
         self._ensure_transaction_exists(txn_id)
-        for op in self._pending_transactions[txn_id].operations:
-            op.release_lock()
+        self._lock_manager.release_locks_for_txn(txn_id)
         txn_metadata = self._pending_transactions.pop(txn_id)
         self._deadlock_detector.remove_txn(txn_id, txn_metadata.txn_keys())
 
-    def _txn_commit(self, txn_id):
+    def _txn_commit(self, txn_id: TxnId):
         self._ensure_transaction_exists(txn_id)
         for op in self._pending_transactions[txn_id].operations:
             if isinstance(op, TxnInsertOp):
@@ -235,8 +251,7 @@ class Database:
                 self._update(op.record)
             if isinstance(op, TxnDeleteOp):
                 self._delete(op.record.key)
-        for op in self._pending_transactions[txn_id].operations:
-            op.release_lock()
+        self._lock_manager.release_locks_for_txn(txn_id)
         txn_metadata = self._pending_transactions.pop(txn_id)
         self._deadlock_detector.remove_txn(txn_id, txn_metadata.txn_keys())
 
